@@ -6,13 +6,15 @@
 #include <string.h>
 
 #include "cpu.h"
+#include "jit/jit.h"
 
 static bool config_valid(const relevo_config *cfg)
 {
     if (cfg->model > RELEVO_68060 || cfg->fpu > RELEVO_FPU_INTERNAL)
         return false;
-    if (cfg->engine != RELEVO_ENGINE_INTERP)
-        return false;   /* the JIT does not exist yet */
+    if (cfg->engine != RELEVO_ENGINE_INTERP
+        && !(cfg->engine == RELEVO_ENGINE_JIT && jit_available()))
+        return false;
     if (cfg->memory_size % RELEVO_PAGE_SIZE != 0
         || (uint64_t)cfg->memory_size > ((uint64_t)1 << 32))
         return false;
@@ -66,6 +68,8 @@ relevo_cpu *relevo_create(const relevo_config *cfg)
 
     atomic_init(&c->ipl, 0);
     atomic_init(&c->stop_request, false);
+    atomic_init(&c->attention, 0);
+    c->engine = cfg->engine;
 
     c->align_check = c->model <= RELEVO_68010;
 
@@ -73,6 +77,12 @@ relevo_cpu *relevo_create(const relevo_config *cfg)
         relevo_map(c, 0, cfg->memory_size, RELEVO_PAGE_RAM);
 
     interp_fill_table(c->table, c->model, c->fpu);
+
+    if (c->engine == RELEVO_ENGINE_JIT && !jit_create(c)) {
+        free(c->table);
+        free(c);
+        return NULL;
+    }
 
     c->r.sr = RELEVO_SR_S | RELEVO_SR_IPL;
     return c;
@@ -82,6 +92,7 @@ void relevo_destroy(relevo_cpu *c)
 {
     if (c == NULL)
         return;
+    jit_destroy(c);
     free(c->table);
     free(c);
 }
@@ -100,6 +111,8 @@ int relevo_map(relevo_cpu *c, uint32_t address, uint64_t size,
     for (uint64_t p = address >> RELEVO_PAGE_SHIFT;
          p < end >> RELEVO_PAGE_SHIFT; p++)
         c->pages[p] = (uint8_t)kind;
+    /* Translated code relies on the page map. */
+    jit_flush(c);
     return 0;
 }
 
@@ -145,11 +158,23 @@ void relevo_reset(relevo_cpu *c)
     c->r.pc = mem_read32(c, 4);
 }
 
-static inline bool between_needed(relevo_cpu *c)
+void cpu_interp_step(relevo_cpu *c)
 {
-    unsigned ipl = atomic_load_explicit(&c->ipl, memory_order_relaxed);
-    return c->trace_pending || c->stopped || ipl != c->prev_ipl
-        || ipl > (c->r.sr & RELEVO_SR_IPL) >> 8u;
+    uint32_t pc = c->r.pc;
+    c->insn_pc = pc;
+    c->trace_pending = (c->r.sr & RELEVO_SR_T1) != 0;
+    c->ae_pc = pc + 2;
+    c->fault_cycles = 0;
+    c->in_insn = true;
+    if (UNLIKELY(pc & 1))
+        cpu_address_error(c, pc, ACC_PROG | ACC_READ);
+    uint16_t op = (uint16_t)cpu_read16(c, pc, ACC_PROG);
+    c->ir = op;
+    c->r.pc = pc + 2;
+    c->table[op](c, op);
+    c->in_insn = false;
+    c->count++;
+    c->budget--;
 }
 
 static relevo_status run_loop(relevo_cpu *c)
@@ -161,24 +186,9 @@ static relevo_status run_loop(relevo_cpu *c)
                                   memory_order_relaxed);
             return RELEVO_HOST_STOP;
         }
-        if (UNLIKELY(between_needed(c)) && !cpu_between_insns(c))
+        if (UNLIKELY(cpu_between_needed(c)) && !cpu_between_insns(c))
             return RELEVO_STOPPED;
-
-        uint32_t pc = c->r.pc;
-        c->insn_pc = pc;
-        c->trace_pending = (c->r.sr & RELEVO_SR_T1) != 0;
-        c->ae_pc = pc + 2;
-        c->fault_cycles = 0;
-        c->in_insn = true;
-        if (UNLIKELY(pc & 1))
-            cpu_address_error(c, pc, ACC_PROG | ACC_READ);
-        uint16_t op = (uint16_t)cpu_read16(c, pc, ACC_PROG);
-        c->ir = op;
-        c->r.pc = pc + 2;
-        c->table[op](c, op);
-        c->in_insn = false;
-        c->count++;
-        c->budget--;
+        cpu_interp_step(c);
         if (UNLIKELY(c->exiting))
             return c->exit;
         if (UNLIKELY(c->r.pc == 0 && (c->options & RELEVO_OPT_EXIT_ON_PC_ZERO)))
@@ -206,7 +216,7 @@ relevo_status relevo_run(relevo_cpu *c, uint64_t budget)
             return RELEVO_HALTED;
         }
     }
-    relevo_status st = run_loop(c);
+    relevo_status st = c->jit != NULL ? jit_run_loop(c) : run_loop(c);
     c->running = false;
     return st;
 }
@@ -224,19 +234,19 @@ uint64_t relevo_cycles(const relevo_cpu *c)
 void relevo_set_ipl(relevo_cpu *c, unsigned level)
 {
     atomic_store_explicit(&c->ipl, level & 7, memory_order_relaxed);
+    atomic_store_explicit(&c->attention, 1, memory_order_relaxed);
 }
 
 void relevo_request_stop(relevo_cpu *c)
 {
     atomic_store_explicit(&c->stop_request, true, memory_order_relaxed);
+    atomic_store_explicit(&c->attention, 1, memory_order_relaxed);
 }
 
 void relevo_invalidate(relevo_cpu *c, uint32_t address, uint32_t size)
 {
     /* The interpreter keeps no translated code. */
-    (void)c;
-    (void)address;
-    (void)size;
+    jit_invalidate(c, address, size);
 }
 
 uint32_t relevo_read(relevo_cpu *c, uint32_t address, unsigned size)

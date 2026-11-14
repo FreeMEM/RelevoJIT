@@ -71,7 +71,7 @@ typedef enum relevo_fpu {
 
 typedef enum relevo_engine {
     RELEVO_ENGINE_INTERP = 0,   /* portable interpreter */
-    RELEVO_ENGINE_JIT           /* x86-64 JIT (not available yet) */
+    RELEVO_ENGINE_JIT           /* x86-64 JIT (only on x86-64 hosts) */
 } relevo_engine;
 
 /* What the host's line A / line F function asks the CPU to do. */
@@ -202,7 +202,8 @@ typedef enum relevo_status {
 } relevo_status;
 
 /* Creates a CPU. The configuration is copied. Returns NULL if the
- * configuration is not valid or not supported yet (the JIT engine, for now). */
+ * configuration is not valid or not supported here (the JIT engine on a
+ * host that is not x86-64). */
 relevo_cpu *relevo_create(const relevo_config *config);
 void relevo_destroy(relevo_cpu *cpu);
 
@@ -223,7 +224,8 @@ void relevo_set_sr(relevo_cpu *cpu, uint16_t sr);
 void relevo_reset(relevo_cpu *cpu);
 
 /* Runs until `budget` instructions have executed or one of the other
- * reasons in relevo_status happens. */
+ * reasons in relevo_status happens. The JIT engine takes interrupts and stop
+ * requests between its blocks of instructions, not between every two. */
 relevo_status relevo_run(relevo_cpu *cpu, uint64_t budget);
 
 /* Instructions executed since the CPU was created. */
@@ -231,7 +233,8 @@ uint64_t relevo_instructions(const relevo_cpu *cpu);
 
 /* Clock cycles since the CPU was created: the 68000's, as the manual counts
  * them (exception processing included). Other models are counted as if
- * they were a 68000 for now. */
+ * they were a 68000 for now. With the JIT engine, the instructions it
+ * translates add only a rough estimate. */
 uint64_t relevo_cycles(const relevo_cpu *cpu);
 
 /* Sets the interrupt level the CPU sees on its IPL pins (0 to 7). The CPU

@@ -23,9 +23,12 @@ It is the 68k engine of UsirOS on x86, in the same way Emu68 is on ARM.
 ```sh
 make              # build/librelevo.a (and build/sst, the test runner)
 make CC=clang     # any C11 compiler
-make test         # unit tests, plus the NOP SingleStepTests if downloaded
+make test         # unit tests, the oracle bench and the JIT against the interpreter (both engines)
 make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
 make sst          # run every SingleStepTests file: passed/total per instruction, and cycles
+make sst JIT=1    # the same on the JIT engine
+make jitdiff      # a long random differential run, JIT against interpreter
+make bench        # speed of the JIT against the interpreter
 make oraculo      # regenerate the bench against FS-UAE with the real Kickstart (tools/oraculo)
 ```
 
@@ -52,6 +55,10 @@ relevo_status st = relevo_run(cpu, 1000000);
 With `RELEVO_OPT_EXIT_ON_PC_ZERO`, `relevo_run()` returns `RELEVO_EXIT_PC_ZERO` as soon as the PC reaches 0, so
 the host can call 68k code by pushing 0 as its return address (as Emu68 does). The host can also take line A and
 line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_f`).
+
+`cfg.engine = RELEVO_ENGINE_JIT` selects the JIT (x86-64 hosts; `relevo_create()` returns NULL elsewhere). It gives
+the same results as the interpreter: what it does not translate, and every access that is not plain RAM (or ROM, to
+read), runs in the interpreter.
 
 Interrupts come from the host with `relevo_set_ipl()`; `relevo_cycles()` gives the 68000 clock cycles spent so
 far. Unmapped pages (`RELEVO_PAGE_NONE`) give the CPU a bus error.

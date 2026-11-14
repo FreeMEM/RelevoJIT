@@ -66,7 +66,7 @@ void test_config_validation(void)
     CHECK(relevo_create(&cfg) == NULL);
 
     cfg.memory = mem;
-    cfg.engine = RELEVO_ENGINE_JIT;     /* not there yet */
+    cfg.engine = (relevo_engine)2;      /* no such engine */
     CHECK(relevo_create(&cfg) == NULL);
     cfg.engine = RELEVO_ENGINE_INTERP;
 

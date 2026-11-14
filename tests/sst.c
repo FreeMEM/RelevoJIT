@@ -2,12 +2,13 @@
  *
  * SingleStepTests/m68000 runner.
  *
- *   sst [-v N] [-c N] FILE.json...
+ *   sst [-j] [-v N] [-c N] FILE.json...
  *
  * Runs every test in each file and prints passed/total per file (one file
  * per instruction group) and a total. -v N prints the first N failures of
  * each file. Exits with 1 if any test failed. Get the files with
- * tools/datos.sh.
+ * tools/datos.sh. -j runs them on the JIT engine (each test is a block of one
+ * instruction; cycles are only approximate there).
  *
  * Cycle counts are compared apart and do not make a test fail: the "cyc"
  * column counts the tests that pass and also take the expected number of
@@ -18,6 +19,7 @@
 #include <string.h>
 
 #include "sst_run.h"
+#include "../src/jit/jit.h"
 
 static const char *base_name(const char *path, char *buf, size_t size)
 {
@@ -33,8 +35,14 @@ static const char *base_name(const char *path, char *buf, size_t size)
 int main(int argc, char **argv)
 {
     long verbose = 0, verbose_cycles = 0;
+    relevo_engine engine = RELEVO_ENGINE_INTERP;
     int first = 1;
     while (first + 1 < argc && argv[first][0] == '-') {
+        if (strcmp(argv[first], "-j") == 0) {
+            engine = RELEVO_ENGINE_JIT;
+            first++;
+            continue;
+        }
         if (strcmp(argv[first], "-v") == 0)
             verbose = strtol(argv[first + 1], NULL, 10);
         else if (strcmp(argv[first], "-c") == 0)
@@ -44,12 +52,12 @@ int main(int argc, char **argv)
         first += 2;
     }
     if (first >= argc || argv[first][0] == '-') {
-        fprintf(stderr, "usage: sst [-v N] [-c N] FILE.json...\n");
+        fprintf(stderr, "usage: sst [-j] [-v N] [-c N] FILE.json...\n");
         return 2;
     }
 
     sst_env env;
-    if (!sst_env_init(&env)) {
+    if (!sst_env_init_engine(&env, engine)) {
         fprintf(stderr, "sst: cannot create the CPU\n");
         return 2;
     }
@@ -105,6 +113,14 @@ int main(int argc, char **argv)
 
     printf("total: %lu/%lu tests, %lu/%lu files; cycles right in %lu\n",
            passed, total, files_ok, files, timed_total);
+    if (engine == RELEVO_ENGINE_JIT) {
+        jit_stats js;
+        jit_get_stats(env.cpu, &js);
+        printf("jit: %llu blocks run, %llu left for the interpreter, "
+               "%llu instructions interpreted\n",
+               (unsigned long long)js.runs, (unsigned long long)js.bails,
+               (unsigned long long)js.interp);
+    }
     sst_test_free(&t);
     sst_env_free(&env);
     if (status == 0 && passed != total)
