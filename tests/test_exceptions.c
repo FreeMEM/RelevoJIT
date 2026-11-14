@@ -294,3 +294,36 @@ void test_cycles(void)
     CHECK_EQ(r->pc, HANDLER);
     relevo_destroy(c);
 }
+
+/* Division by zero (SingleStepTests has no such case): vector 5 with the
+ * address of the next instruction, C cleared, the register kept, 38 cycles
+ * plus the operand's. */
+void test_divide_by_zero(void)
+{
+    static const uint16_t code[] = {
+        0x80C1,             /* DIVU D1,D0         38 */
+        0x81FC, 0x0000,     /* DIVS #0,D0         42 */
+    };
+    relevo_cpu *c = setup(code, sizeof code / sizeof code[0]);
+    relevo_regs *r = relevo_get_regs(c);
+    put32(5 * 4, HANDLER);
+    put16(HANDLER, 0x4E73);                 /* RTE */
+    r->d[0] = 0x12345678;
+    r->d[1] = 0xFFFF0000;
+    r->sr |= RELEVO_SR_C;
+    uint64_t t = relevo_cycles(c);
+    CHECK_EQ(relevo_run(c, 1), RELEVO_BUDGET);
+    CHECK_EQ(relevo_cycles(c) - t, 38);
+    CHECK_EQ(r->pc, HANDLER);
+    CHECK_EQ(get32(SSP - 4), CODE + 2);
+    CHECK_EQ(get16(SSP - 6) & RELEVO_SR_C, 0);
+    CHECK_EQ(r->d[0], 0x12345678);
+    CHECK_EQ(relevo_run(c, 1), RELEVO_BUDGET);  /* RTE */
+    t = relevo_cycles(c);
+    CHECK_EQ(relevo_run(c, 1), RELEVO_BUDGET);
+    CHECK_EQ(relevo_cycles(c) - t, 42);
+    CHECK_EQ(r->pc, HANDLER);
+    CHECK_EQ(get32(SSP - 4), CODE + 6);
+    CHECK_EQ(r->d[0], 0x12345678);
+    relevo_destroy(c);
+}
