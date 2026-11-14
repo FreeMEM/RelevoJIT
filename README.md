@@ -26,6 +26,7 @@ make CC=clang     # any C11 compiler
 make test         # unit tests, plus the NOP SingleStepTests if downloaded
 make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
 make sst          # run every SingleStepTests file: passed/total per instruction, and cycles
+make oraculo      # regenerate the bench against FS-UAE with the real Kickstart (tools/oraculo)
 ```
 
 ## Using it

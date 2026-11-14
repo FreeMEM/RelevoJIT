@@ -42,7 +42,9 @@ static bool cmp_flags(relevo_cpu *c, uint32_t d, uint32_t s, unsigned size)
 
 /* MULx.L <ea>,Dl (32 x 32 -> 32, V on overflow) or <ea>,Dh:Dl (-> 64).
  * Extension word: Dl in bits 14-12, signed in bit 11, 64-bit result in
- * bit 10, Dh in bits 2-0. With Dh = Dl (undefined) the high half wins. */
+ * bit 10, Dh in bits 2-0. N and Z come from the whole 64-bit product, also
+ * for a 32-bit result that overflows; with Dh = Dl (undefined) the low half
+ * stays. Both as FS-UAE, the bench's oracle. */
 static void op_mul_l(relevo_cpu *c, uint16_t op)
 {
     uint32_t ext = fetch16(c);
@@ -59,18 +61,15 @@ static void op_mul_l(relevo_cpu *c, uint16_t op)
 
     unsigned f = 0;
     uint32_t lo = (uint32_t)p, hi = (uint32_t)(p >> 32);
-    c->r.d[dl] = lo;
+    if (p == 0)
+        f |= CCR_Z;
+    if (hi & 0x80000000u)
+        f |= CCR_N;
     if (ext & 0x0400) {
         c->r.d[dh] = hi;
-        if (p == 0)
-            f |= CCR_Z;
-        if (hi & 0x80000000u)
-            f |= CCR_N;
+        c->r.d[dl] = lo;
     } else {
-        if (lo == 0)
-            f |= CCR_Z;
-        if (lo & 0x80000000u)
-            f |= CCR_N;
+        c->r.d[dl] = lo;
         /* the high half is not just the extension of the low one */
         uint32_t ext_hi = sign && (lo & 0x80000000u) ? 0xFFFFFFFFu : 0;
         if (hi != ext_hi)
@@ -91,8 +90,10 @@ static void op_mul_l(relevo_cpu *c, uint16_t op)
  *
  * The dividend is Dq (Dr:Dq for 64 bits). The remainder has the sign of
  * the dividend. When Dr = Dq only the quotient is kept. On overflow the
- * registers do not change; V is set, C cleared, and N set and Z cleared
- * as the 68000 does for DIVx.W (the manuals leave N and Z undefined). */
+ * registers do not change; V is set, C cleared, N set and Z cleared (the
+ * manuals leave N and Z undefined; FS-UAE, the bench's oracle, sets N too,
+ * and Z in some cases only, by a rule not found yet). Division by zero
+ * leaves the flags as they were (as FS-UAE). */
 static void op_div_l(relevo_cpu *c, uint16_t op)
 {
     uint32_t ext = fetch16(c);
@@ -103,7 +104,6 @@ static void op_div_l(relevo_cpu *c, uint16_t op)
     bool sign = (ext & 0x0800) != 0, wide = (ext & 0x0400) != 0;
 
     if (s == 0) {
-        set_ccr_bits(c, CCR_C, 0);
         cycles(c, 4);
         cpu_exception(c, VEC_ZERO_DIVIDE, c->r.pc);
         return;
@@ -164,26 +164,29 @@ static void op_link_l(relevo_cpu *c, uint16_t op)
 
 /* ---- CHK.L, CHK2, CMP2 ------------------------------------------------ */
 
-/* CHK.L <ea>,Dn: as CHK.W, on 32 bits. The manuals define only N (set if
- * Dn < 0, clear if Dn > bound); Z, V and C are set as CHK.W does on the
- * 68000 (Z if Dn is 0, V and C clear). */
+/* CHK.W and CHK.L on the 68020 and later. The manuals define only N (set
+ * if Dn < 0, clear if Dn > bound). As FS-UAE, the bench's oracle: Dn >
+ * bound is checked first (so N is clear when both hold), and Z, V and C do
+ * not change, nor does N when there is no trap. */
+void chk_020(relevo_cpu *c, int32_t v, int32_t bound)
+{
+    if (v > bound) {
+        set_ccr_bits(c, CCR_N, 0);
+        cpu_exception(c, VEC_CHK, c->r.pc);
+    } else if (v < 0) {
+        set_ccr_bits(c, CCR_N, CCR_N);
+        cpu_exception(c, VEC_CHK, c->r.pc);
+    }
+}
+
+/* CHK.L <ea>,Dn: as CHK.W, on 32 bits. */
 static void op_chk_l(relevo_cpu *c, uint16_t op)
 {
     ea_t e;
     ea_decode_op(c, &e, op, SZ_L);
     int32_t bound = (int32_t)ea_read(c, &e);
-    int32_t v = (int32_t)c->r.d[(op >> 9) & 7];
-    unsigned f = v == 0 ? CCR_Z : 0;
     cycles(c, 4);
-    if (v < 0) {
-        set_ccr_bits(c, CCR_N | CCR_Z | CCR_V | CCR_C, f | CCR_N);
-        cpu_exception(c, VEC_CHK, c->r.pc);
-    } else if (v > bound) {
-        set_ccr_bits(c, CCR_N | CCR_Z | CCR_V | CCR_C, f);
-        cpu_exception(c, VEC_CHK, c->r.pc);
-    } else {
-        set_ccr_bits(c, CCR_N | CCR_Z | CCR_V | CCR_C, f);
-    }
+    chk_020(c, (int32_t)c->r.d[(op >> 9) & 7], bound);
 }
 
 /* CHK2/CMP2 <ea>,Rn: the lower bound at <ea>, the upper one after it.

@@ -77,8 +77,10 @@ static void check_mapped(relevo_cpu *c, uint32_t addr, unsigned size,
 {
     for (unsigned i = 0; i < size; i++) {
         uint32_t a = (addr + i) & c->addr_mask;
-        if (c->pages[a >> RELEVO_PAGE_SHIFT] == RELEVO_PAGE_NONE)
+        if (c->pages[a >> RELEVO_PAGE_SHIFT] == RELEVO_PAGE_NONE) {
+            c->fault_size = size;
             cpu_bus_error(c, addr, acc);
+        }
     }
 }
 

@@ -4,10 +4,18 @@
  */
 #include "interp.h"
 
-/* MOVE from SR: not privileged on the 68000; it reads the operand first,
- * like CLR. TODO(R3): privileged from the 68010 on. */
+/* MOVE from SR: not privileged on the 68000, where it reads the operand
+ * first, like CLR; privileged from the 68010 on. */
 static void op_move_from_sr(relevo_cpu *c, uint16_t op)
 {
+    if (c->model != RELEVO_68000) {
+        if (!supervisor_or_trap(c))
+            return;
+        ea_t e;
+        ea_decode_op(c, &e, op, SZ_W);
+        ea_write(c, &e, c->r.sr);
+        return;
+    }
     ea_t e;
     ea_decode_op(c, &e, op, SZ_W);
     ea_read(c, &e);

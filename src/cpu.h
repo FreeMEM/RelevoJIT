@@ -40,6 +40,7 @@ enum {
     VEC_TRACE = 9,
     VEC_LINE_A = 10,
     VEC_LINE_F = 11,
+    VEC_FORMAT_ERROR = 14,
     VEC_SPURIOUS = 24,
     VEC_AUTOVECTOR = 24,        /* + interrupt level 1-7 */
     VEC_TRAP = 32               /* + 0-15 */
@@ -106,6 +107,8 @@ struct relevo_cpu {
      * which depends on how far the instruction got (see interp/ea.c). */
     uint16_t ir;
     uint32_t ae_pc;
+    /* Bytes of the access that took a bus error (for the 68010+ frames). */
+    unsigned fault_size;
 
     atomic_uint ipl;
     unsigned prev_ipl;          /* level 7 is edge triggered */

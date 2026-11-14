@@ -49,10 +49,25 @@ static void op_muls(relevo_cpu *c, uint16_t op)
 
 /* ---- Divide ----------------------------------------------------------- */
 
-/* Division by zero: the trap, after 38 cycles plus the operand's. */
-static void divide_by_zero(relevo_cpu *c)
+/* Division by zero: the trap, after 38 cycles plus the operand's. The
+ * flags (undefined in the manuals) are those of FS-UAE, the bench's oracle
+ * (tools/oraculo): the 68000 and 68010 clear C; the 68020 and 68030 set V
+ * and, for DIVU, N from the dividend's sign and Z the other way round, for
+ * DIVS Z alone; the 68040 and 68060 clear N, Z, V and C for DIVU and C for
+ * DIVS. */
+static void divide_by_zero(relevo_cpu *c, uint32_t dividend, bool sign)
 {
-    set_ccr_bits(c, CCR_C, 0);
+    unsigned f = 0, mask = CCR_C;
+    if (c->model == RELEVO_68020 || c->model == RELEVO_68030) {
+        mask = CCR_N | CCR_Z | CCR_V | CCR_C;
+        if (sign)
+            f = CCR_Z;
+        else
+            f = CCR_V | ((dividend >> 31) ? CCR_N : CCR_Z);
+    } else if (c->model >= RELEVO_68040 && !sign) {
+        mask = CCR_N | CCR_Z | CCR_V | CCR_C;
+    }
+    set_ccr_bits(c, mask, f);
     cycles(c, 4);
     cpu_exception(c, VEC_ZERO_DIVIDE, c->r.pc);
 }
@@ -100,7 +115,7 @@ static void op_divu(relevo_cpu *c, uint16_t op)
     unsigned dn = (op >> 9) & 7;
     uint32_t d = c->r.d[dn];
     if (s == 0) {
-        divide_by_zero(c);
+        divide_by_zero(c, d, false);
         return;
     }
     if ((d >> 16) >= s) {
@@ -120,7 +135,7 @@ static void op_divs(relevo_cpu *c, uint16_t op)
     unsigned dn = (op >> 9) & 7;
     uint32_t d = c->r.d[dn];
     if (s == 0) {
-        divide_by_zero(c);
+        divide_by_zero(c, d, true);
         return;
     }
     int32_t dividend = (int32_t)d;

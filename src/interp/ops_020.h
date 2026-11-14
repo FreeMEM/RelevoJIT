@@ -15,6 +15,9 @@
 #include "interp.h"
 
 void ops_020_bf_init(op_table *tb);
+
+/* The trap and flags of CHK.W and CHK.L on the 68020+ (ops_020.c). */
+void chk_020(relevo_cpu *cpu, int32_t value, int32_t bound);
 void ops_020_cache_init(op_table *tb);
 
 #endif /* RELEVO_OPS_020_H */
