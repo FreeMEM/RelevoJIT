@@ -23,7 +23,7 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   - [ ] R3a: el banco contra el oráculo (programas 68020 generados que corren en FS-UAE con el Kickstart real y en
     Emu68 por `jit-host`, y comparan registros y memoria con RelevoJIT), y lo del 68010: VBR, `MOVEC`, `MOVES`, `RTD`,
     marcos de excepción del 68010 en adelante (formatos 0, 2, 9, A, B del 020/030; 0, 2, 3, 4, 7 del 040).
-  - [ ] R3b: modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
+  - [x] R3b (2026-11-14): modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
     `MULx.L`, `DIVx.L`, `EXTB.L`, `CHK.L`, `CHK2`, `CMP2`, `CAS`, `CAS2`, `TRAPcc`, `PACK`, `UNPK`, campos de bits,
     `Bcc.L`, `LINK.L`, `MOVE16` y caché (`CACR`, `CPUSH`, `CINV`).
 - [ ] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
@@ -208,3 +208,57 @@ Falta:
   (el manual los da por indefinidos) y no está comprobado contra un 68000 real.
 - No hay errores de bus en los datos de estas instrucciones; los errores de dirección (MULx, DIVx y desplazamientos
   en memoria) sí, y pasan.
+
+### 2026-11-14 — R3b
+
+Hecho:
+
+- Modos de dirección del 68020 en `ea.c`: índice escalado (×1, 2, 4, 8) en la palabra corta, y la palabra de
+  extensión completa (supresión de base y de índice, desplazamientos de base y exteriores de 16 y 32 bits,
+  indirectos con memoria pre y post indexados), también relativos al PC. Las codificaciones reservadas dan
+  instrucción ilegal. El 68000 y el 68010 siguen leyendo la palabra corta como antes (sin escala).
+- Grupo nuevo `020` (una línea en `OPS_GROUPS`), solo del 68020 en adelante:
+  - `ops_020.c`: `MULU.L`/`MULS.L` (32 y 64 bits), `DIVU.L`/`DIVS.L`/`DIVUL.L`/`DIVSL.L` (32 y 64 bits),
+    `EXTB.L`, `CHK.L`, `CHK2`, `CMP2`, `CAS`, `CAS2`, `TRAPcc` (sin operando, .W y .L), `PACK`, `UNPK`, `LINK.L`,
+    `CMPI` con operando relativo al PC y `TST` con `An` (.W y .L), relativo al PC e inmediato.
+  - `ops_020_bf.c`: `BFTST`, `BFEXTU`, `BFEXTS`, `BFCHG`, `BFCLR`, `BFSET`, `BFFFO`, `BFINS`, en registro (con la
+    vuelta del bit 0 al 31) y en memoria (desplazamiento con signo, hasta 5 bytes).
+  - `ops_020_cache.c` (68040 en adelante): `MOVE16` (las cinco formas), `CINV` y `CPUSH` (privilegiadas; la de
+    instrucciones llama a `relevo_invalidate` por línea, página de 8 KB o todo).
+- `src/cache.c` y `cache.h`: `cache_write_cacr()` guarda los bits de CACR que tiene cada modelo (020, 030, 040,
+  060) y, en el 020 y el 030, C y CE invalidan como `CINV`. Es para el `MOVEC` de R3a, que solo tiene que llamarla.
+- `Bcc.L`, `BRA.L` y `BSR.L` ya estaban (R2a); ahora tienen prueba.
+- 23 pruebas nuevas en `tests/test_020.c`, sacadas de los manuales. Las codificaciones, comprobadas con vasm.
+
+Comprobado:
+
+- `make test` (59 pruebas) y `make sst` (317 500 de 317 500, con ciclos) con gcc 16 y clang 23, también con ASan y
+  UBSan.
+- `table_no_conflicts` pasa en todos los modelos con el grupo nuevo.
+
+Decisiones donde el manual dice "indefinido" (sin comprobar contra un 68020 real; el banco de R3a lo dirá):
+
+- `DIVx.L` que desborda: V a 1, C a 0, N a 1 y Z a 0, como `DIVx.W` en el 68000. Los registros no cambian.
+- `MULx.L` de 64 bits con Dh = Dl: queda la mitad alta. `DIVx.L` con Dr = Dq: queda el cociente.
+- `CHK.L`: Z, V y C como `CHK.W` en el 68000 (Z si Dn es 0; V y C a 0).
+- `CMP2`/`CHK2`: dentro si Rn - inferior <= superior - inferior, sin signo (vale para límites con y sin signo, como
+  Emu68). N y V no cambian.
+- `CAS2` que falla con Dc1 = Dc2: queda el primer operando. `MOVE16 (Ax)+,(Ay)+` con Ax = Ay: sube 32.
+- `PACK`/`UNPK` con `-(A7)`: baja 2 por byte, como los demás accesos de byte a la pila.
+- El bit 3 de la palabra de extensión completa se ignora.
+
+No hecho:
+
+- Ciclos del 020 en adelante: solo aproximados (los accesos cuentan como en el 68000 y cada instrucción suma un
+  poco).
+- Marcos: `CHK`, `CHK2`, `TRAPcc`, `TRAPV` y la división por cero llaman a `cpu_exception()` con el PC siguiente, y
+  hoy sale el formato 0. En el 020+ deberían ser formato 2 con la dirección de la instrucción (`c->insn_pc`): es de
+  R3a, en `exception.c`.
+- 68060: `MULx.L`/`DIVx.L` de 64 bits, `CHK2`, `CMP2` y `CAS2` se ejecutan como en el 040, sin la excepción de
+  instrucción no implementada.
+- `CALLM`/`RTM` (solo 68020) y las instrucciones de la MMU no están.
+- No hay prueba de que `CINV`/`CPUSH` llamen de verdad a `relevo_invalidate`: el intérprete no guarda nada que se
+  pueda mirar. Se verá con el JIT (R6).
+
+Ficheros comunes tocados: `src/interp/ea.c` (modos nuevos, aparte del camino del 68000), `src/interp/interp.h` (una
+línea en `OPS_GROUPS`), `Makefile` (`tests/test_020.c` en la lista) y `tests/tests.h`.

@@ -282,7 +282,8 @@ void table_set(op_table *tb, uint16_t op, relevo_handler h);
     X(move)           \
     X(system)         \
     X(arith)          \
-    X(bits)
+    X(bits)           \
+    X(020)
 
 #define OPS_DECLARE(name) void ops_##name##_init(op_table *tb);
 OPS_GROUPS(OPS_DECLARE)

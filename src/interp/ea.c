@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * Effective addresses of the 68000 (M68000PRM chapter 2), condition codes
- * and jumps.
+ * Effective addresses of the 68000 (M68000PRM chapter 2) and of the 68020
+ * (scaled index, full extension word, memory indirect: MC68020UM 2.2),
+ * condition codes and jumps.
  *
  * What the 68000 does when an access faults is not in the manuals; the
  * rules here come from the SingleStepTests/m68000 data:
@@ -58,18 +59,77 @@ void jump(relevo_cpu *c, uint32_t target, uint32_t ae_pc)
     c->r.pc = target;
 }
 
-/* (d8,An,Xn) and (d8,PC,Xn): the brief extension word. The 68000 ignores
- * bits 10-8 (scale and full format on the 68020). The addition takes 2
- * cycles more. */
-static uint32_t indexed(relevo_cpu *c, uint32_t base)
+/* An encoding the CPU does not accept, found while decoding an operand:
+ * the illegal instruction exception, and the instruction ends here. */
+static NORETURN void ea_illegal(relevo_cpu *c)
 {
-    uint32_t ext = fetch16(c);
-    cycles(c, 2);
+    cpu_exception_group1(c, VEC_ILLEGAL);
+    longjmp(c->fault_jmp, 1);
+}
+
+/* The index register of an extension word: Dn or An, its low word sign
+ * extended or all of it, times the scale (68020 on). */
+static uint32_t index_value(relevo_cpu *c, uint32_t ext, bool scaled)
+{
     unsigned xn = (ext >> 12) & 7;
     uint32_t x = (ext & 0x8000) ? c->r.a[xn] : c->r.d[xn];
     if (!(ext & 0x0800))
         x = sext(x, SZ_W);
-    return base + sext(ext, SZ_B) + x;
+    if (scaled)
+        x <<= (ext >> 9) & 3;
+    return x;
+}
+
+/* The 68020's full extension word (MC68020UM 2.2): base and index
+ * suppress (bits 7 and 6), base displacement size (bits 5-4: 01 none, 10
+ * word, 11 long) and the memory indirection (bits 2-0, I/IS):
+ *
+ *   index used:      000 none, 001-011 pre-indexed, 101-111 post-indexed
+ *   index suppressed: 000 none, 001-011 memory indirect
+ *
+ * with an outer displacement of none, a word or a long (low 2 bits 01, 10,
+ * 11). The displacements follow the extension word, base first. The
+ * indirect address is a long read from data space. The reserved encodings
+ * (displacement size 00, I/IS 100, or 1xx with the index suppressed) take
+ * the illegal instruction exception. */
+static uint32_t full_format(relevo_cpu *c, uint32_t base, uint32_t ext)
+{
+    unsigned iis = ext & 7;
+    bool is = (ext & 0x0040) != 0;
+    if ((ext & 0x0030) == 0 || iis == 4 || (is && iis > 4))
+        ea_illegal(c);
+    uint32_t bd = 0;
+    if (((ext >> 4) & 3) == 2)
+        bd = sext(fetch16(c), SZ_W);
+    else if (((ext >> 4) & 3) == 3)
+        bd = fetch32(c);
+    uint32_t od = 0;
+    if ((iis & 3) == 2)
+        od = sext(fetch16(c), SZ_W);
+    else if ((iis & 3) == 3)
+        od = fetch32(c);
+    if (ext & 0x0080)
+        base = 0;
+    uint32_t x = is ? 0 : index_value(c, ext, true);
+    if (iis == 0)
+        return base + bd + x;
+    if (iis & 4)    /* post-indexed */
+        return cpu_read32(c, base + bd, ACC_DATA) + x + od;
+    return cpu_read32(c, base + bd + x, ACC_DATA) + od;
+}
+
+/* (d8,An,Xn) and (d8,PC,Xn): the brief extension word. The 68000 and
+ * 68010 ignore bits 10-8; from the 68020 on, bits 10-9 scale the index and
+ * bit 8 selects the full format. The addition takes 2 cycles more. */
+static uint32_t indexed(relevo_cpu *c, uint32_t base)
+{
+    uint32_t ext = fetch16(c);
+    cycles(c, 2);
+    if (c->model < RELEVO_68020)
+        return base + sext(ext, SZ_B) + index_value(c, ext, false);
+    if (ext & 0x0100)
+        return full_format(c, base, ext);
+    return base + sext(ext, SZ_B) + index_value(c, ext, true);
 }
 
 void ea_decode(relevo_cpu *c, ea_t *e, unsigned mode, unsigned reg,

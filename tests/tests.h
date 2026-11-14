@@ -35,6 +35,29 @@
     X(trap_and_rte)             \
     X(cycles)                   \
     X(divide_by_zero)           \
+    X(ea_020_brief_scaled)      \
+    X(ea_020_full_no_indirect)  \
+    X(ea_020_memory_indirect)   \
+    X(ea_020_pc_relative)       \
+    X(ea_020_reserved)          \
+    X(mul_l)                    \
+    X(div_l)                    \
+    X(extb_l)                   \
+    X(chk_l)                    \
+    X(cmp2)                     \
+    X(chk2)                     \
+    X(cas)                      \
+    X(cas2)                     \
+    X(trapcc)                   \
+    X(pack_unpk)                \
+    X(bf_register)              \
+    X(bf_memory)                \
+    X(link_l)                   \
+    X(branch_long)              \
+    X(cmpi_tst_020)             \
+    X(move16)                   \
+    X(cinv_cpush)               \
+    X(cacr)                     \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \
