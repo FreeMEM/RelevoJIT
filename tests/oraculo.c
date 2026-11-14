@@ -150,6 +150,12 @@ static long run_program(const char *bin, relevo_model model)
 
     relevo_config cfg = {0};
     cfg.model = model;
+    /* The FPU of the oracle: a 68882 next to the 68020 and 68030 (the
+     * programs without FPU instructions do not see it), the 68040's own. */
+    if (model == RELEVO_68020 || model == RELEVO_68030)
+        cfg.fpu = RELEVO_FPU_68882;
+    else if (model >= RELEVO_68040)
+        cfg.fpu = RELEVO_FPU_INTERNAL;
     cfg.memory = mem;
     cfg.memory_size = MEM_SIZE;
     cfg.options = RELEVO_OPT_EXIT_ON_PC_ZERO;

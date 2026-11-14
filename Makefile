@@ -17,6 +17,8 @@ WARNINGS := -Wall -Wextra -Werror -pedantic
 ALL_CFLAGS := -std=c11 $(WARNINGS) $(CFLAGS)
 CPPFLAGS += -Iinclude
 DEPFLAGS = -MMD -MP
+# libm: the FPU's transcendental functions (long double)
+LDLIBS := -lm
 
 BUILD := build
 LIB := $(BUILD)/librelevo.a
@@ -24,7 +26,7 @@ LIB := $(BUILD)/librelevo.a
 LIB_SRC := $(wildcard src/*.c src/interp/*.c src/jit/*.c src/jit/x86_64/*.c)
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
-            tests/test_010.c tests/test_020.c tests/test_json.c tests/test_sst.c \
+            tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c tests/test_sst.c \
             tests/test_jit.c \
             $(TEST_COMMON)
 SST_SRC := tests/sst.c $(TEST_COMMON)
@@ -64,19 +66,19 @@ $(LIB): $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
 $(BUILD)/run_tests: $(UNIT_OBJ) $(LIB)
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(UNIT_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(UNIT_OBJ) $(LIB) $(LDLIBS)
 
 $(BUILD)/sst: $(SST_OBJ) $(LIB)
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(SST_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(SST_OBJ) $(LIB) $(LDLIBS)
 
 $(BUILD)/oraculo: $(ORACLE_OBJ) $(LIB)
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ORACLE_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ORACLE_OBJ) $(LIB) $(LDLIBS)
 
 $(BUILD)/jitdiff: $(JITDIFF_OBJ) $(LIB)
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(JITDIFF_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(JITDIFF_OBJ) $(LIB) $(LDLIBS)
 
 $(BUILD)/bench: $(BENCH_OBJ) $(LIB)
-	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(BENCH_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(BENCH_OBJ) $(LIB) $(LDLIBS)
 
 test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/run_tests

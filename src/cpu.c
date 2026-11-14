@@ -85,6 +85,7 @@ relevo_cpu *relevo_create(const relevo_config *cfg)
     }
 
     c->r.sr = RELEVO_SR_S | RELEVO_SR_IPL;
+    fpu_reset(c);
     return c;
 }
 
@@ -153,6 +154,7 @@ void relevo_reset(relevo_cpu *c)
     c->halted = false;
     c->trace_pending = false;
     c->in_group0 = false;
+    fpu_reset(c);
     c->r.isp = mem_read32(c, 0);
     c->r.a[7] = c->r.isp;
     c->r.pc = mem_read32(c, 4);
