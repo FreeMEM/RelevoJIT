@@ -8,9 +8,12 @@
  * instruction they check every memory access, and if one is not a plain
  * access to RAM (or ROM, for reads) they leave the block with the state
  * from before that instruction, which the interpreter then runs. So
- * exceptions, host pages and the 68000's fault frames all come from the
- * interpreter, exactly as without the JIT. Blocks jump straight to each
- * other ("chaining") and only come back to the dispatcher when they must.
+ * exceptions and the 68000's fault frames all come from the interpreter,
+ * exactly as without the JIT. An access to a host page (or a ROM write)
+ * does not leave: the block calls the interpreter for that instruction
+ * and then goes on to the next block (jit_host_step()). Blocks jump
+ * straight to each other ("chaining") and only come back to the
+ * dispatcher when they must.
  *
  * Translated code is not checked when it runs: writes into it are caught
  * instead. The pages with translated code are marked (PAGE_RAM_CODE in the
@@ -61,11 +64,16 @@ typedef struct jit_stats {
     uint64_t flushes;       /* whole cache flushes */
     uint64_t links;         /* jumps chained */
     uint64_t dropped;       /* blocks dropped (code changed, invalidate) */
+    uint64_t host;          /* instructions a block ran in the interpreter
+                             * for a host page (jit_host_step()) */
 } jit_stats;
 
 void jit_get_stats(const relevo_cpu *cpu, jit_stats *out);
 /* Uses MOVBE or not (when the CPU has it): to test both paths. Flushes. */
 void jit_set_movbe(relevo_cpu *cpu, bool on);
+/* Keeps condition codes in x86 form between blocks or not (when the CPU
+ * has LAHF and SAHF): to test both paths. Flushes. */
+void jit_set_lazy(relevo_cpu *cpu, bool on);
 /* Whether the first instruction at `pc` would be translated. */
 bool jit_translatable(relevo_cpu *cpu, uint32_t pc);
 

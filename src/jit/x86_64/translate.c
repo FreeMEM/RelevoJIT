@@ -26,11 +26,26 @@
  *
  * Flags: the x86 flags of an operation are N, Z, V and C (SF, ZF, OF and
  * CF; for subtraction x86's CF is the borrow, as on the 68k), and X is C
- * where the 68k sets it. They go into R14 only when something reads them
+ * where the 68k sets it. They are kept only when something reads them
  * later (an instruction of the block, the block's exit, or an instruction
  * that may bail), and not at once: they stay "pending" in EFLAGS until
  * some code would change them. So a Bcc, DBcc or Scc right after the
  * instruction that set its flags tests EFLAGS directly.
+ *
+ * Lazy condition codes (when the CPU has LAHF and SAHF in 64-bit mode):
+ * pending flags that must be kept are not turned into CCR bits but saved
+ * as they are, with LAHF and SETO, in cpu->jit_ccr (the "record", see
+ * cpu.h), together with which CCR bits they give; X has its own byte. A
+ * CCR bit then lives in EFLAGS (pending), in R14 (when the block knows R14
+ * has it: "own"), or else in the record if the record has it, or else in
+ * R14. Saving takes four or five instructions and changes no flag, and
+ * SAHF brings the flags back for a Bcc. The record goes from block to
+ * block: a block that does not touch the flags leaves it as it is, and
+ * one that ends with pending flags overwrites it. Only what reads CCR bits
+ * from R14 (ADDX, the handler calls, a condition with mixed sources...)
+ * merges it first, through a shared stub, and the dispatcher merges it
+ * into SR when a block returns. SR itself stays in R14 from block to
+ * block: the trampoline loads it and the common exit stores it.
  *
  * Exits: a branch to a known PC ends in a jump that first leads to the
  * dispatcher (JIT_EXIT_CHAIN) and is then patched to go straight to the
@@ -77,6 +92,9 @@ static const int host_pool[JIT_HOST_REGS] = {
 #define OFF_ATTN   ((int32_t)offsetof(relevo_cpu, attention))
 #define OFF_IR     ((int32_t)offsetof(relevo_cpu, ir))
 #define OFF_JIT    ((int32_t)offsetof(relevo_cpu, jit))
+#define OFF_CCR    ((int32_t)offsetof(relevo_cpu, jit_ccr))
+#define OFF_FPCR   ((int32_t)offsetof(relevo_cpu, r.fpcr))
+#define OFF_FPEND  ((int32_t)offsetof(relevo_cpu, fpu_pending))
 #define JOFF_MAP   ((int32_t)offsetof(jit_state, map))
 #define JOFF_IND   ((int32_t)offsetof(jit_state, ind))
 
@@ -88,7 +106,7 @@ static const int host_pool[JIT_HOST_REGS] = {
 enum { PM_NONE, PM_LOGIC, PM_ARITH, PM_ARITHX };
 
 typedef struct deferred {
-    int slow, cont, bail;       /* labels */
+    int slow, cont, bail, host; /* labels */
     int addr;                   /* the register with the masked address */
     uint32_t size_write;        /* size | write << 16 */
 } deferred;
@@ -111,9 +129,16 @@ typedef struct tr {
     uint8_t live_out[JIT_MAX_INSNS];
     unsigned cyc_before[JIT_MAX_INSNS + 1];
     int bail[JIT_MAX_INSNS];    /* label of each instruction's bail exit */
+    int hostp[JIT_MAX_INSNS];   /* ... and of its host path, or -1 */
+    uint8_t naccess[JIT_MAX_INSNS]; /* memory checks of each instruction */
     int tail, loop, entry_out;  /* labels */
     bool movbe;
+    bool lazy;                  /* the record (see the top) is used */
     pending pend;
+    unsigned own;               /* CCR bits R14 holds for sure */
+    unsigned rec;               /* CCR bits the record holds for sure */
+    unsigned cur;               /* the instruction being emitted */
+    uint8_t own_at[JIT_MAX_INSNS];  /* `own` at each bail check */
     int64_t label_pos[MAX_LABELS];
     unsigned nlabels;
     struct { size_t at; int label; } fix[MAX_FIXUPS];
@@ -296,11 +321,58 @@ static void flags_from_eflags(tr *t, unsigned mask, int mode)
     gather_cvx(t, mask, mode == PM_ARITHX);
 }
 
-/* Writes the pending flags into R14. */
+/* Saves the pending flags in the record, as they are. Changes no flag:
+ * EFLAGS still has them. */
+static void record_pending(tr *t)
+{
+    xbuf *b = &t->b;
+    unsigned m = t->pend.mask;
+    x_lahf(b);
+    if (m & JF_NZVC) {
+        x_setcc(b, XC_O, RAX);
+        x_store(b, 2, xm(RCPU, OFF_CCR), RAX);
+        x_store_imm(b, 1, xm(RCPU, OFF_CCR + 2), m & JF_NZVC);
+        t->rec = (t->rec & JF_X) | (m & JF_NZVC);
+    }
+    if (m & JF_X) {
+        x_store_ah(b, xm(RCPU, OFF_CCR + 3));
+        t->rec |= JF_X;
+    }
+    t->own &= ~m;
+    t->pend.mode = PM_NONE;
+    t->pend.mask = 0;
+}
+
+/* Whether flags pending now are read from R14 later in the block (by an
+ * instruction other than a condition, which can take them back from the
+ * record): then they are better turned into CCR bits at once. */
+static bool read_from_r14_later(const tr *t)
+{
+    unsigned left = t->pend.mask;
+    for (unsigned i = t->cur; i < t->n && left; i++) {
+        const jit_insn *in = &t->in[i];
+        bool cond = in->kind == JK_BCC || in->kind == JK_DBCC
+                 || in->kind == JK_SCC;
+        if ((in->flags_use & left) && !cond)
+            return true;
+        left &= ~(unsigned)in->flags_def;
+    }
+    return false;
+}
+
+/* Keeps the pending flags before something changes EFLAGS: in the record
+ * or in R14. */
 static void flags_flush(tr *t)
 {
-    if (t->pend.mode != PM_NONE)
-        flags_from_eflags(t, t->pend.mask, t->pend.mode);
+    if (t->pend.mode == PM_NONE)
+        return;
+    if (t->lazy && !read_from_r14_later(t)) {
+        record_pending(t);
+        return;
+    }
+    flags_from_eflags(t, t->pend.mask, t->pend.mode);
+    t->own |= t->pend.mask;
+    t->rec &= ~t->pend.mask;
     t->pend.mode = PM_NONE;
     t->pend.mask = 0;
 }
@@ -309,6 +381,92 @@ static void flags_pending(tr *t, unsigned mask, int mode)
 {
     t->pend.mask = mask;
     t->pend.mode = mask ? mode : PM_NONE;
+}
+
+/* Makes R14 hold the CCR bits in `need` (nothing pending): if the record
+ * may have one of them, the stub merges it into R14 (keeping what the
+ * block wrote there) and empties it. Uses RAX, RCX and RDX. */
+static void flags_need(tr *t, unsigned need)
+{
+    unsigned miss = need & ~t->own;
+    if (miss == 0)
+        return;
+    xbuf *b = &t->b;
+    x_test_mi32(b, xm(RCPU, OFF_CCR),
+                (miss & JF_NZVC) << 16 | ((miss & JF_X) ? 0xFF000000u : 0));
+    int skip = new_label(t);
+    jcc(t, XC_E, skip);
+    x_mov_ri(b, RCX, t->own);
+    call_abs(t, t->j->ccr_off);
+    bind(t, skip);
+    t->own |= need;
+    t->rec = 0;
+}
+
+/* Where a block leaves (or bails): makes R14 and the record agree. The
+ * pending flags go to the record; what R14 holds for sure is taken out of
+ * the record. Changes no flag while flags are pending. */
+static void flags_exit(tr *t)
+{
+    xbuf *b = &t->b;
+    if (!t->lazy) {
+        flags_flush(t);
+        return;
+    }
+    if (t->pend.mode != PM_NONE && (JF_NZVC & ~t->pend.mask & ~t->own)) {
+        /* (never at an exit: pending flags have all of N Z V C) */
+        flags_from_eflags(t, t->pend.mask, t->pend.mode);
+        t->own |= t->pend.mask;
+        t->pend.mode = PM_NONE;
+        t->pend.mask = 0;
+    }
+    if (t->pend.mode != PM_NONE) {
+        unsigned m = t->pend.mask;
+        bool x_own = (t->own & JF_X) && !(m & JF_X);
+        record_pending(t);
+        if (x_own)
+            x_store_imm(b, 1, xm(RCPU, OFF_CCR + 3), 0);
+        return;
+    }
+    unsigned nzvc = t->own & JF_NZVC;
+    bool x = (t->own & JF_X) != 0;
+    if (nzvc == JF_NZVC && x) {
+        x_store_imm(b, 2, xm(RCPU, OFF_CCR + 2), 0);
+        return;
+    }
+    if (nzvc == JF_NZVC)
+        x_store_imm(b, 1, xm(RCPU, OFF_CCR + 2), 0);
+    else if (nzvc != 0)
+        x_alu_mi(b, XA_AND, 1, xm(RCPU, OFF_CCR + 2), (int32_t)(~nzvc & 0xFF));
+    if (x)
+        x_store_imm(b, 1, xm(RCPU, OFF_CCR + 3), 0);
+}
+
+/* Before a branch: pending flags go to the record now (it changes no flag),
+ * so that every way out finds them there. */
+static void flags_settle(tr *t)
+{
+    if (t->lazy && t->pend.mode != PM_NONE)
+        record_pending(t);
+}
+
+/* The flag state, for code emitted on two paths. */
+typedef struct fstate {
+    pending pend;
+    unsigned own, rec;
+} fstate;
+
+static fstate fs_save(const tr *t)
+{
+    fstate f = { t->pend, t->own, t->rec };
+    return f;
+}
+
+static void fs_restore(tr *t, fstate f)
+{
+    t->pend = f.pend;
+    t->own = f.own;
+    t->rec = f.rec;
 }
 
 /* The CCR bits in `mask` from constants. */
@@ -397,9 +555,12 @@ static void cond_to_cf(tr *t, unsigned cc)
     x_bt_rr(&t->b, RCX, RAX);
 }
 
-/* The x86 condition for 68k condition cc (2-15): on EFLAGS while flags are
- * pending (they hold N, Z, V and C exactly), else on CF after testing R14. */
-static int cond(tr *t, unsigned cc)
+/* The x86 condition for 68k condition cc (2-15), which reads the CCR bits
+ * `need`: on EFLAGS while flags are pending (they hold N, Z, V and C
+ * exactly), on EFLAGS taken back from the record when it has them all
+ * (SAHF; ADD AL first sets OF from the byte SETO wrote), else on CF after
+ * testing R14 (emit_insn made sure R14 has them). Uses RAX and RCX. */
+static int cond(tr *t, unsigned cc, unsigned need)
 {
     static const uint8_t x86cc[16] = {
         0, 0, XC_A, XC_BE, XC_AE, XC_B, XC_NE, XC_E,
@@ -407,6 +568,13 @@ static int cond(tr *t, unsigned cc)
     };
     if (t->pend.mode != PM_NONE)
         return x86cc[cc & 15];
+    if ((need & ~t->own) != 0) {
+        xbuf *b = &t->b;
+        x_load(b, 2, RAX, xm(RCPU, OFF_CCR));
+        x_alu_ri(b, XA_ADD, 1, RAX, 0x7F);
+        x_sahf(b);
+        return x86cc[cc & 15];
+    }
     cond_to_cf(t, cc);
     return XC_B;
 }
@@ -431,12 +599,12 @@ static void store_regs(tr *t)
             x_store(&t->b, 4, xm(RCPU, OFF_REG(r)), H(t, r));
 }
 
-/* What every exit after the instructions stores: the registers, SR and,
- * for the 68000's fault frames, IR (the last opcode run). */
+/* What every exit after the instructions stores: the registers and, for
+ * the 68000's fault frames, IR (the last opcode run). (SR stays in R14:
+ * the common exit stores it.) */
 static void exit_stores(tr *t)
 {
     store_regs(t);
-    x_store(&t->b, 2, xm(RCPU, OFF_SR), RSR);
     if (t->c->model == RELEVO_68000)
         x_store_imm(&t->b, 2, xm(RCPU, OFF_IR), t->in[t->n - 1].op);
 }
@@ -446,7 +614,7 @@ static void exit_stores(tr *t)
 static void exit_chain(tr *t, uint32_t pc)
 {
     xbuf *b = &t->b;
-    flags_flush(t);
+    flags_exit(t);
     count(t, t->n);
     exit_stores(t);
     size_t at = x_jmp32(b);         /* rel 0: falls through, until patched */
@@ -461,7 +629,7 @@ static void exit_chain(tr *t, uint32_t pc)
 static void exit_indirect(tr *t, int r)
 {
     xbuf *b = &t->b;
-    flags_flush(t);
+    flags_exit(t);
     count(t, t->n);
     exit_stores(t);
     x_mov_rr(b, 4, RAX, r);
@@ -489,7 +657,7 @@ static void exit_branch(tr *t, uint32_t target)
     }
     xbuf *b = &t->b;
     int out = new_label(t);
-    flags_flush(t);
+    flags_exit(t);
     count(t, t->n);
     x_alu_mi(b, XA_CMP, 8, xm(RCPU, OFF_BUDGET), (int32_t)t->n);
     jcc(t, XC_B, out);
@@ -585,6 +753,14 @@ static void store_be(tr *t, unsigned size, int addr, int32_t disp, val v)
     }
 }
 
+/* The host path of the instruction being emitted (see emit_host_path). */
+static int host_label(tr *t)
+{
+    if (t->hostp[t->cur] < 0)
+        t->hostp[t->cur] = new_label(t);
+    return t->hostp[t->cur];
+}
+
 static void defer(tr *t, int slow, int cont, int bail, int addr,
                   unsigned size, bool write)
 {
@@ -593,6 +769,7 @@ static void defer(tr *t, int slow, int cont, int bail, int addr,
         return;
     }
     deferred *d = &t->defer[t->ndefer++];
+    d->host = host_label(t);
     d->slow = slow;
     d->cont = cont;
     d->bail = bail;
@@ -601,12 +778,15 @@ static void defer(tr *t, int slow, int cont, int bail, int addr,
 }
 
 /* Checks that `size` bytes at the address in `addr` are a plain access
- * (else bails), and masks the address. Uses RCX. */
-static void mem_check(tr *t, int addr, unsigned size, bool write, int bail)
+ * (else bails), and masks the address. `align`: a word or long access,
+ * which faults at an odd address on the 68000 and 68010. Uses RCX. */
+static void mem_check_x(tr *t, int addr, unsigned size, bool write, int bail,
+                        bool align)
 {
     xbuf *b = &t->b;
     relevo_cpu *c = t->c;
-    if (size > 1 && c->align_check) {
+    t->naccess[t->cur]++;
+    if (align && size > 1 && c->align_check) {
         x_test_ri(b, 1, addr, 1);
         jcc(t, XC_NE, bail);
     }
@@ -627,6 +807,11 @@ static void mem_check(tr *t, int addr, unsigned size, bool write, int bail)
     }
     bind(t, cont);
     defer(t, slow, cont, bail, addr, size, write);
+}
+
+static void mem_check(tr *t, int addr, unsigned size, bool write, int bail)
+{
+    mem_check_x(t, addr, size, write, bail, true);
 }
 
 static void ea_index(tr *t, const jit_ea *e, int tmp, int *index)
@@ -689,7 +874,11 @@ static void mem_address(tr *t, const jit_ea *e, int dst, unsigned size,
         /* Checked when decoded; a write may still hit translated code. */
         uint32_t a = e->disp & t->c->addr_mask;
         x_mov_ri(b, dst, a);
-        if (write) {
+        t->naccess[t->cur]++;
+        if (e->host) {
+            /* (what follows does not run) */
+            jmp(t, host_label(t));
+        } else if (write) {
             int slow = new_label(t), cont = new_label(t);
             if ((a & ((1u << JIT_MAP_SHIFT) - 1)) + size
                 > (1u << JIT_MAP_SHIFT)) {
@@ -814,6 +1003,15 @@ static void emit_movea(tr *t, const jit_insn *in, int bail)
         x_mov_rr(b, 4, d, v.reg);
 }
 
+/* ADDA/SUBA that become a LEA. */
+static bool adda_lea(const jit_insn *in)
+{
+    return in->kind == JK_ADDA && in->alu != JA_CMP
+        && (in->src.kind == JEA_IMM
+            || ((in->src.kind == JEA_DREG || in->src.kind == JEA_AREG)
+                && in->alu == JA_ADD));
+}
+
 /* ADDA, SUBA, CMPA, and ADDQ/SUBQ to An. */
 static void emit_adda(tr *t, const jit_insn *in, unsigned fl, int bail)
 {
@@ -831,6 +1029,15 @@ static void emit_adda(tr *t, const jit_insn *in, unsigned fl, int bail)
     }
     apply_deltas(t);
     int d = H(t, in->dst.reg);
+    if (adda_lea(in)) {
+        /* no flags: a LEA keeps pending ones in EFLAGS */
+        if (v.reg < 0)
+            x_lea(b, d, xm(d, (int32_t)(in->alu == JA_SUB ? 0u - v.imm
+                                                          : v.imm)));
+        else
+            x_lea(b, d, xmi(d, v.reg, 0, 0));
+        return;
+    }
     op_alu_ri_or_rr(t, x86_alu(in->alu), 4, d, v);
     if (in->alu == JA_CMP)
         flags_pending(t, fl, PM_ARITH);
@@ -1305,14 +1512,10 @@ static void emit_scc(tr *t, const jit_insn *in, int bail)
         int d = H(t, in->dst.reg);
         if (cc <= 1) {
             x_mov_ri_sz(b, 1, d, cc == 0 ? 0xFF : 0);
-        } else if (t->pend.mode != PM_NONE) {
-            x_setcc(b, cond(t, cc), RDX);
+        } else {
+            x_setcc(b, cond(t, cc, in->flags_use), RDX);
             flags_flush(t);
             x_unary(b, XU_NEG, 1, RDX);
-            x_mov_rr(b, 1, d, RDX);
-        } else {
-            cond_to_cf(t, cc);
-            x_alu_rr(b, XA_SBB, 4, RDX, RDX);
             x_mov_rr(b, 1, d, RDX);
         }
         return;
@@ -1324,8 +1527,8 @@ static void emit_scc(tr *t, const jit_insn *in, int bail)
         store_be(t, 1, RDX, 0, c);
         return;
     }
-    cond_to_cf(t, cc);
-    x_alu_rr(b, XA_SBB, 4, RAX, RAX);
+    x_setcc(b, cond(t, cc, in->flags_use), RAX);
+    x_unary(b, XU_NEG, 1, RAX);
     store_be(t, 1, RDX, 0, vreg(RAX));
 }
 
@@ -1424,13 +1627,45 @@ static void emit_pea(tr *t, const jit_insn *in, int bail)
     x_lea(b, sp, xm(sp, -4));
 }
 
+/* An FPU instruction runs from the block only if it cannot take an
+ * exception: none pending from the one before, and none enabled in the
+ * FPCR (so this one leaves none pending either, and BSUN is off). Else
+ * it bails. Uses RAX and RCX. */
+static void fpu_check(tr *t, int bail)
+{
+    xbuf *b = &t->b;
+    x_load(b, 4, RAX, xm(RCPU, OFF_FPCR));
+    x_alu_ri(b, XA_AND, 4, RAX, 0xFF00);
+    x_load(b, 4, RCX, xm(RCPU, OFF_FPEND));
+    x_alu_rr(b, XA_OR, 4, RAX, RCX);
+    jcc(t, XC_NE, bail);
+}
+
 /* Calls the interpreter's handler: the registers it may read are stored
  * first, those it may change loaded after. A bit field in memory first
  * checks the 5 bytes from the byte its offset points into. */
 static void emit_call(tr *t, const jit_insn *in, int bail)
 {
     xbuf *b = &t->b;
-    if (in->sub == 1) {
+    if (in->sub == 2) {
+        /* ABCD, SBCD -(Ay),-(Ax): the source byte, then the destination
+         * (one more step down when Ax is Ay) */
+        int y = in->src.reg, x = in->dst.reg;
+        int32_t sy = y == JR_A(7) ? 2 : 1, sx = x == JR_A(7) ? 2 : 1;
+        x_lea(b, RAX, xm(H(t, y), -sy));
+        mem_check_x(t, RAX, 1, false, bail, false);
+        x_lea(b, RDX, xm(H(t, x), -sx - (x == y ? sy : 0)));
+        mem_check_x(t, RDX, 1, true, bail, false);
+    } else if (in->sub == 3) {
+        /* NBCD <ea>: the handler moves An itself */
+        if (jea_mem_const(&in->dst)) {
+            mem_address(t, &in->dst, RAX, 1, true, bail);
+        } else {
+            ea_address(t, &in->dst, RAX, bail);
+            mem_check_x(t, RAX, 1, true, bail, false);
+        }
+        memset(t->delta, 0, sizeof t->delta);
+    } else if (in->sub == 1) {
         if (jea_mem_const(&in->dst) && !(in->ext & 0x0800)) {
             jit_ea e = in->dst;
             e.disp += ((unsigned)in->ext >> 6 & 31) >> 3;
@@ -1477,6 +1712,172 @@ static void emit_call(tr *t, const jit_insn *in, int bail)
     x_movzx_load(b, 2, RSR, xm(RCPU, OFF_SR));
 }
 
+/* TAS: N and Z of the byte, then bit 7 set. */
+static void emit_tas(tr *t, const jit_insn *in, unsigned fl, int bail)
+{
+    xbuf *b = &t->b;
+    int d = rmw_begin(t, in, bail);
+    apply_deltas(t);
+    x_mov_rr(b, 4, RAX, d);
+    x_alu_ri(b, XA_OR, 1, d, 0x80);
+    rmw_end(t, in);
+    if (fl) {
+        x_test_rr(b, 1, RAX, RAX);
+        flags_pending(t, fl, PM_LOGIC);
+    }
+}
+
+/* CHK: Dn < 0 or Dn > the bound takes the exception (the interpreter's,
+ * after a bail). Otherwise the 68000 and 68010 set Z from Dn and clear N,
+ * V and C; later models change nothing. */
+static void emit_chk(tr *t, const jit_insn *in, unsigned fl, int bail)
+{
+    xbuf *b = &t->b;
+    unsigned size = in->size;
+    if (in->src.kind == JEA_MEM)
+        mem_address(t, &in->src, RAX, size, false, bail);
+    val v = src_value(t, &in->src, size, RAX);
+    int dn = H(t, in->dst.reg);
+    if (size == 2) {
+        x_movsx_rr(b, 2, RAX, dn);
+        if (v.reg >= 0) {
+            x_movsx_rr(b, 2, RCX, v.reg);
+            v.reg = RCX;
+        } else {
+            v.imm = sext(v.imm, SZ_W);
+        }
+    } else {
+        x_mov_rr(b, 4, RAX, dn);
+    }
+    x_test_rr(b, 4, RAX, RAX);
+    jcc(t, XC_S, bail);
+    op_alu_ri_or_rr(t, XA_CMP, 4, RAX, v);
+    jcc(t, XC_G, bail);
+    apply_deltas(t);
+    if (fl) {
+        x_test_rr(b, 4, RAX, RAX);
+        flags_pending(t, fl, PM_LOGIC);
+    }
+}
+
+/* CAS Dc,Du,<ea>: flags of <ea> - Dc; equal, Du goes to <ea>; else <ea>
+ * goes to Dc. (Both paths keep EFLAGS.) */
+static void emit_cas(tr *t, const jit_insn *in, unsigned fl, int bail)
+{
+    xbuf *b = &t->b;
+    int size = in->size;
+    mem_address(t, &in->dst, RDX, in->size, true, bail);
+    load_be(t, in->size, RCX, RDX, 0);
+    apply_deltas(t);
+    int dc = H(t, in->ext & 7), du = H(t, (in->ext >> 6) & 7);
+    int ne = new_label(t), done = new_label(t);
+    x_alu_rr(b, XA_CMP, size, RCX, dc);
+    jcc(t, XC_NE, ne);
+    store_be(t, in->size, RDX, 0, vreg(du));
+    jmp(t, done);
+    bind(t, ne);
+    x_mov_rr(b, size, dc, RCX);
+    bind(t, done);
+    flags_pending(t, fl, PM_ARITH);
+}
+
+/* MOVEP: the bytes of Dn, high first, at every other address. */
+static void emit_movep(tr *t, const jit_insn *in, int bail)
+{
+    xbuf *b = &t->b;
+    unsigned n = in->size;
+    int dn = H(t, in->src.reg);
+    x_lea(b, RDX, xm(H(t, in->dst.base), (int32_t)in->dst.disp));
+    mem_check_x(t, RDX, 2 * n - 1, in->sub, bail, false);
+    for (unsigned i = 0; i < n; i++) {
+        if (in->sub) {
+            x_mov_rr(b, 4, RCX, dn);
+            if (i + 1 < n)
+                x_shift_ri(b, 5, RCX, (int)(8 * (n - 1 - i)));
+            x_store(b, 1, at68k(RDX, (int32_t)(2 * i)), RCX);
+        } else if (i == 0) {
+            x_movzx_load(b, 1, RAX, at68k(RDX, 0));
+        } else {
+            x_movzx_load(b, 1, RCX, at68k(RDX, (int32_t)(2 * i)));
+            x_shift_ri(b, 4, RAX, 8);
+            x_alu_rr(b, XA_OR, 4, RAX, RCX);
+        }
+    }
+    if (!in->sub)
+        x_mov_rr(b, (int)n, dn, RAX);
+}
+
+/* A call of fpu_jit_op() or fpu_jit_branch(): the x86 registers that hold
+ * 68k registers and that C may change are kept on the stack (an even
+ * number: RSP stays 16-byte aligned). EAX is the fourth argument; the
+ * result is in RAX. */
+static void call_fpu(tr *t, const void *fnp, size_t fnsize, uint32_t a1,
+                     uint32_t a2)
+{
+    xbuf *b = &t->b;
+    static const int saved[] = { RSI, RDI, R8, R9, R10, R11 };
+    uint64_t addr = 0;
+    memcpy(&addr, fnp, fnsize);
+    for (int i = 0; i < 6; i++)
+        x_push(b, saved[i]);
+#if defined(_WIN32)
+    x_rsp_adjust(b, -32);
+    x_mov_rr(b, 4, R9, RAX);
+    x_mov_rr(b, 8, RCX, RCPU);
+    x_mov_ri(b, RDX, a1);
+    x_mov_ri(b, R8, a2);
+#else
+    x_mov_rr(b, 4, RCX, RAX);
+    x_mov_rr(b, 8, RDI, RCPU);
+    x_mov_ri(b, RSI, a1);
+    x_mov_ri(b, RDX, a2);
+#endif
+    x_mov_ri64(b, RAX, addr);
+    x_call_r(b, RAX);
+#if defined(_WIN32)
+    x_rsp_adjust(b, 32);
+#endif
+    for (int i = 6; i-- > 0;)
+        x_pop(b, saved[i]);
+}
+
+/* An FPU instruction: its operand addressed and checked (An moved here),
+ * or a Dn read or written here; the rest in fpu_jit_op(). */
+static void emit_fpu(tr *t, const jit_insn *in, int bail)
+{
+    xbuf *b = &t->b;
+    bool out = (in->ext >> 13) == 3;
+    fpu_check(t, bail);
+    if (in->dst.kind == JEA_MEM) {
+        mem_address(t, &in->dst, RAX, in->size, in->write, bail);
+        apply_deltas(t);
+    } else if (in->dst.kind == JEA_DREG && !out) {
+        x_mov_rr(b, 4, RAX, H(t, in->dst.reg));
+    }
+    uint32_t (*fn)(relevo_cpu *, uint32_t, uint32_t, uint32_t) = fpu_jit_op;
+    call_fpu(t, &fn, sizeof fn, in->pc,
+             in->ext | (uint32_t)(in->op & 0x3F) << 16);
+    if (in->dst.kind == JEA_DREG && out)
+        x_mov_rr(b, in->size, H(t, in->dst.reg), RAX);
+}
+
+/* FBcc: the condition from fpu_jit_branch(), then as Bcc. */
+static void emit_fbcc(tr *t, const jit_insn *in, int bail)
+{
+    xbuf *b = &t->b;
+    fpu_check(t, bail);
+    bool (*fn)(relevo_cpu *, uint32_t, unsigned) = fpu_jit_branch;
+    call_fpu(t, &fn, sizeof fn, in->pc, in->cc);
+    int taken = new_label(t);
+    x_test_rr(b, 1, RAX, RAX);
+    jcc(t, XC_NE, taken);
+    fstate f = fs_save(t);
+    exit_chain(t, in->pc + in->len);
+    bind(t, taken);
+    fs_restore(t, f);
+    exit_branch(t, in->target);
+}
+
 static void emit_bcc(tr *t, const jit_insn *in)
 {
     uint32_t next = in->pc + in->len;
@@ -1485,11 +1886,13 @@ static void emit_bcc(tr *t, const jit_insn *in)
         return;
     }
     int taken = new_label(t);
-    jcc(t, cond(t, in->cc), taken);
-    pending p = t->pend;
+    int x = cond(t, in->cc, in->flags_use);
+    flags_settle(t);
+    jcc(t, x, taken);
+    fstate f = fs_save(t);
     exit_chain(t, next);
     bind(t, taken);
-    t->pend = p;
+    fs_restore(t, f);
     exit_branch(t, in->target);
 }
 
@@ -1501,19 +1904,23 @@ static void emit_dbcc(tr *t, const jit_insn *in)
         return;
     }
     int out_true = new_label(t), m1 = new_label(t);
-    pending p = t->pend;
+    int x = in->cc != 1 ? cond(t, in->cc, in->flags_use) : 0;
+    flags_settle(t);
+    fstate f = fs_save(t);
     if (in->cc != 1)
-        jcc(t, cond(t, in->cc), out_true);
+        jcc(t, x, out_true);
     flags_flush(t);
     /* Dn.W - 1: CF when it was 0, i.e. the counter is now -1 */
     x_alu_ri(&t->b, XA_SUB, 2, H(t, in->dst.reg), 1);
+    fstate g = fs_save(t);
     jcc(t, XC_B, m1);
     exit_branch(t, in->target);
     bind(t, m1);
+    fs_restore(t, g);
     exit_chain(t, next);
     if (in->cc != 1) {
         bind(t, out_true);
-        t->pend = p;
+        fs_restore(t, f);
         exit_chain(t, next);
     }
 }
@@ -1575,19 +1982,56 @@ static bool reads_eflags(const jit_insn *in)
         || (in->kind == JK_SCC && in->dst.kind == JEA_DREG);
 }
 
+/* Whether an instruction leaves EFLAGS alone (and never bails): pending
+ * flags can wait across it. */
+static bool keeps_eflags(const jit_insn *in)
+{
+    switch (in->kind) {
+    case JK_NOP:
+    case JK_EXG:
+        return true;
+    case JK_LEA:
+        return !in->src.ind;
+    case JK_MOVEA:
+        return in->src.kind != JEA_MEM;
+    case JK_ADDA:
+        return adda_lea(in);
+    default:
+        return false;
+    }
+}
+
+/* Whether an instruction reads its condition with cond(), which can take
+ * the flags back from the record. */
+static bool reads_cond(const jit_insn *in)
+{
+    return in->kind == JK_BCC || in->kind == JK_DBCC || in->kind == JK_SCC;
+}
+
 static void emit_insn(tr *t, unsigned i)
 {
     const jit_insn *in = &t->in[i];
     unsigned fl = in->flags_def & t->live_out[i];
     xbuf *b = &t->b;
     int bail = -1;
+    t->cur = i;
     if (in->may_bail) {
         bail = new_label(t);
         t->bail[i] = bail;
     }
     memset(t->delta, 0, sizeof t->delta);
-    if (!reads_eflags(in))
+    bool via_eflags = reads_eflags(in) && t->pend.mode != PM_NONE;
+    if (!reads_eflags(in) && !keeps_eflags(in))
         flags_flush(t);
+    unsigned need = in->flags_use;
+    if (need != 0 && !via_eflags) {
+        /* R14 must have what the instruction reads, but a condition can
+         * also take all of it from the record. */
+        unsigned miss = need & ~t->own;
+        if (!(reads_cond(in) && miss == need && (miss & ~t->rec) == 0))
+            flags_need(t, need);
+    }
+    t->own_at[i] = (uint8_t)t->own;
     switch (in->kind) {
     case JK_NOP:
         break;
@@ -1672,8 +2116,26 @@ static void emit_insn(tr *t, unsigned i)
     case JK_UNLK:
         emit_unlk(t, in, bail);
         break;
+    case JK_TAS:
+        emit_tas(t, in, fl, bail);
+        break;
+    case JK_CHK:
+        emit_chk(t, in, fl, bail);
+        break;
+    case JK_CAS:
+        emit_cas(t, in, fl, bail);
+        break;
+    case JK_MOVEP:
+        emit_movep(t, in, bail);
+        break;
     case JK_CALL:
         emit_call(t, in, bail);
+        break;
+    case JK_FBCC:
+        emit_fbcc(t, in, bail);
+        break;
+    case JK_FPU:
+        emit_fpu(t, in, bail);
         break;
     case JK_BCC:
         emit_bcc(t, in);
@@ -1684,6 +2146,16 @@ static void emit_insn(tr *t, unsigned i)
     default:
         emit_jump(t, in, bail);
         break;
+    }
+    /* What the instruction wrote into R14 (what it left pending is in
+     * t->pend; a handler call reloads all of SR). */
+    if (in->kind == JK_CALL && in->flags_use == JF_ALL) {
+        t->own = JF_ALL;
+        t->rec = 0;
+    } else if (fl != 0) {
+        unsigned r14 = fl & ~(t->pend.mode != PM_NONE ? t->pend.mask : 0);
+        t->own |= r14;
+        t->rec &= ~r14;
     }
 }
 
@@ -1700,10 +2172,69 @@ static void emit_deferred(tr *t)
         x_push_imm(b, (int32_t)d->size_write);
         call_abs(t, t->j->check_off);
         x_lea64(b, RSP, xm(RSP, 8));
-        x_test_rr(b, 4, RCX, RCX);
-        jcc(t, XC_E, d->bail);
-        jmp(t, d->cont);
+        x_alu_ri(b, XA_CMP, 4, RCX, 1);
+        jcc(t, XC_E, d->cont);
+        jcc(t, XC_B, d->bail);
+        jmp(t, d->host);
     }
+}
+
+/* An access to a host page (or a ROM write) in instruction i: R14 and the
+ * record made to agree, the registers and SR stored, the instructions
+ * before counted; then the interpreter runs instruction i (jit_host_step)
+ * and the block goes on to the next one through a chained jump, or leaves
+ * for the dispatcher. Either way the state is in the CPU structure, so
+ * nothing is stored again. */
+static void emit_host_path(tr *t, unsigned i)
+{
+    xbuf *b = &t->b;
+    const jit_insn *in = &t->in[i];
+    uint32_t next = in->pc + in->len;
+    bind(t, t->hostp[i]);
+    t->pend.mode = PM_NONE;
+    t->pend.mask = 0;
+    t->own = t->own_at[i];
+    flags_exit(t);
+    store_regs(t);
+    x_store(b, 2, xm(RCPU, OFF_SR), RSR);
+    x_store_imm(b, 4, xm(RCPU, OFF_PC), in->pc);
+    count(t, i);
+    int (*fn)(relevo_cpu *, uint32_t, int) = jit_host_step;
+    uint64_t addr;
+    memcpy(&addr, &fn, sizeof addr);
+    /* What can fault in the interpreter besides the access checked: other
+     * memory operands, a jump to an odd address, and the frame of an
+     * exception (division by zero, CHK) pushed to a missing page. */
+    uint32_t may_fault = t->naccess[i] > 1 || in->ends_block
+        || in->kind == JK_DIV || in->kind == JK_DIVL || in->kind == JK_CHK;
+#if defined(_WIN32)
+    x_rsp_adjust(b, -32);
+    x_mov_rr(b, 8, RCX, RCPU);
+    x_mov_ri(b, RDX, next);
+    x_mov_ri(b, R8, may_fault);
+#else
+    x_mov_rr(b, 8, RDI, RCPU);
+    x_mov_ri(b, RSI, next);
+    x_mov_ri(b, RDX, may_fault);
+#endif
+    x_mov_ri64(b, RAX, addr);
+    x_call_r(b, RAX);
+#if defined(_WIN32)
+    x_rsp_adjust(b, 32);
+#endif
+    x_movzx_load(b, 2, RSR, xm(RCPU, OFF_SR));
+    int leave = new_label(t);
+    x_test_rr(b, 4, RAX, RAX);
+    jcc(t, XC_NE, leave);
+    size_t at = x_jmp32(b);         /* chained to the block at `next` */
+    x_mov_ri(b, RAX, next);
+    x_mov_ri(b, RCX, JIT_EXIT_CHAIN);
+    x_mov_ri(b, RDX, (uint32_t)(t->base + at));
+    jmp_abs(t, t->j->exit_off);
+    bind(t, leave);
+    x_load(b, 4, RAX, xm(RCPU, OFF_PC));
+    x_mov_ri(b, RCX, JIT_EXIT_NORMAL);
+    jmp_abs(t, t->j->exit_off);
 }
 
 const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
@@ -1717,6 +2248,8 @@ const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
     t->in = j->insns;
     t->n = n;
     t->movbe = j->movbe;
+    t->lazy = j->lazy;
+    t->own = t->lazy ? 0 : JF_ALL;
     t->base = j->used;
     t->b.p = j->mem.rw + j->used;
     t->b.cap = j->mem.size - j->used;
@@ -1753,6 +2286,7 @@ const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
     for (unsigned i = 0; i < n; i++) {
         t->cyc_before[i + 1] = t->cyc_before[i] + t->in[i].cycles;
         t->bail[i] = -1;
+        t->hostp[i] = -1;
     }
 
     t->tail = new_label(t);
@@ -1761,7 +2295,7 @@ const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
     xbuf *b = &t->b;
 
     /* Entry: enough budget and no attention needed, then the registers
-     * and SR. */
+     * (SR is in R14 already). */
     x_alu_mi(b, XA_CMP, 8, xm(RCPU, OFF_BUDGET), (int32_t)n);
     jcc(t, XC_B, t->entry_out);
     x_alu_mi(b, XA_CMP, 4, xm(RCPU, OFF_ATTN), 0);
@@ -1769,7 +2303,6 @@ const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
     for (int r = 0; r < 16; r++)
         if (t->used & (1u << r))
             x_load(b, 4, H(t, r), xm(RCPU, OFF_REG(r)));
-    x_movzx_load(b, 2, RSR, xm(RCPU, OFF_SR));
     bind(t, t->loop);
 
     for (unsigned i = 0; i < n; i++)
@@ -1778,12 +2311,19 @@ const uint8_t *jit_backend_translate(relevo_cpu *c, jit_state *j,
         exit_chain(t, t->in[n - 1].pc + t->in[n - 1].len);
 
     emit_deferred(t);
+    for (unsigned i = 0; i < n; i++)
+        if (t->hostp[i] >= 0)
+            emit_host_path(t, i);
 
     /* The bail exits: PC of the instruction, what came before counted. */
     for (unsigned i = 0; i < n; i++) {
         if (t->bail[i] < 0)
             continue;
         bind(t, t->bail[i]);
+        t->pend.mode = PM_NONE;
+        t->pend.mask = 0;
+        t->own = t->own_at[i];
+        flags_exit(t);
         x_mov_ri(b, RAX, t->in[i].pc);
         count(t, i);
         x_mov_ri(b, RCX, JIT_EXIT_BAIL);
@@ -1845,10 +2385,12 @@ bool jit_backend_init(relevo_cpu *c, jit_state *j)
 #if defined(_WIN32)
     x_mov_rr(b, 8, RCPU, RCX);
     x_mov_rr(b, 8, RMEM, RDX);
+    x_movzx_load(b, 2, RSR, xm(RCPU, OFF_SR));
     x_jmp_r(b, R8);
 #else
     x_mov_rr(b, 8, RCPU, RDI);
     x_mov_rr(b, 8, RMEM, RSI);
+    x_movzx_load(b, 2, RSR, xm(RCPU, OFF_SR));
     x_jmp_r(b, RDX);
 #endif
 
@@ -1862,6 +2404,7 @@ bool jit_backend_init(relevo_cpu *c, jit_state *j)
     align16(b);
     j->exit_off = b->pos;
     x_store(b, 4, xm(RCPU, OFF_PC), RAX);
+    x_store(b, 2, xm(RCPU, OFF_SR), RSR);
     x_mov_rr(b, 4, RAX, RCX);
     x_shift_r(b, XS_SHL, 8, RDX, 32);
     x_alu_rr(b, XA_OR, 8, RAX, RDX);
@@ -1895,6 +2438,51 @@ bool jit_backend_init(relevo_cpu *c, jit_state *j)
     for (int i = 9; i-- > 0;)
         x_pop(b, keep[i]);
     x_ret(b);
+
+    /* The record merge: ECX the CCR bits to keep in R14. Takes N Z V C
+     * (those the record gives) and X from the record, and empties it.
+     * Changes RAX, RCX, RDX and the flags. */
+    align16(b);
+    j->ccr_off = b->pos;
+    {
+        x_push(b, RSI);
+        x_push(b, RDI);
+        x_mov_rr(b, 4, RSI, RCX);
+        x_unary(b, XU_NOT, 4, RSI);                 /* ESI: what to take */
+        x_movzx_load(b, 2, RAX, xm(RCPU, OFF_CCR));
+        x_mov_rr(b, 4, RCX, RAX);                   /* N Z: bits 15, 14 */
+        x_shift_ri(b, 5, RCX, 12);
+        x_alu_ri(b, XA_AND, 4, RCX, JF_N | JF_Z);
+        x_mov_rr(b, 4, RDX, RAX);                   /* V: bit 0 */
+        x_alu_ri(b, XA_AND, 4, RDX, 1);
+        x_alu_rr(b, XA_ADD, 4, RDX, RDX);
+        x_alu_rr(b, XA_OR, 4, RCX, RDX);
+        x_mov_rr(b, 4, RDX, RAX);                   /* C: bit 8 */
+        x_shift_ri(b, 5, RDX, 8);
+        x_alu_ri(b, XA_AND, 4, RDX, 1);
+        x_alu_rr(b, XA_OR, 4, RCX, RDX);
+        x_movzx_load(b, 1, RDI, xm(RCPU, OFF_CCR + 2));
+        x_alu_rr(b, XA_AND, 4, RDI, RSI);           /* EDI: bits taken */
+        x_movzx_load(b, 1, RAX, xm(RCPU, OFF_CCR + 3));
+        x_test_rr(b, 4, RAX, RAX);
+        size_t no_x = x_jcc32(b, XC_E);
+        x_test_ri(b, 4, RSI, JF_X);
+        size_t no_x2 = x_jcc32(b, XC_E);
+        x_alu_ri(b, XA_AND, 4, RAX, 1);
+        x_shift_ri(b, 4, RAX, 4);
+        x_alu_rr(b, XA_OR, 4, RCX, RAX);
+        x_alu_ri(b, XA_OR, 4, RDI, JF_X);
+        x_link(b, no_x, (int64_t)b->pos);
+        x_link(b, no_x2, (int64_t)b->pos);
+        x_alu_rr(b, XA_AND, 4, RCX, RDI);
+        x_unary(b, XU_NOT, 4, RDI);
+        x_alu_rr(b, XA_AND, 4, RSR, RDI);
+        x_alu_rr(b, XA_OR, 4, RSR, RCX);
+        x_store_imm(b, 2, xm(RCPU, OFF_CCR + 2), 0);
+        x_pop(b, RDI);
+        x_pop(b, RSI);
+        x_ret(b);
+    }
 
     if (b->overflow)
         return false;
@@ -1935,6 +2523,18 @@ bool jit_backend_has_movbe(void)
 #endif
 }
 
+bool jit_backend_has_lahf(void)
+{
+#if defined(__GNUC__)
+    unsigned a, b, c, d;
+    if (!__get_cpuid(0x80000001u, &a, &b, &c, &d))
+        return false;
+    return c & 1;
+#else
+    return false;
+#endif
+}
+
 #else   /* not x86-64 */
 
 #include "../jit_internal.h"
@@ -1945,6 +2545,11 @@ bool jit_backend_available(void)
 }
 
 bool jit_backend_has_movbe(void)
+{
+    return false;
+}
+
+bool jit_backend_has_lahf(void)
 {
     return false;
 }

@@ -98,6 +98,8 @@
     X(jit_write_near_code)      \
     X(jit_write_other_block)    \
     X(jit_cpush)                \
+    X(jit_translated)           \
+    X(jit_host_patches_block)   \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

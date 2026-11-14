@@ -126,6 +126,12 @@ struct relevo_cpu {
     relevo_engine engine;
     struct jit_state *jit;
     atomic_uint attention;
+    /* JIT: condition codes left in x86 form by translated code, newer than
+     * those in r.sr (see jit/x86_64/translate.c). Byte 0: x86 OF; byte 1:
+     * the low byte of EFLAGS; byte 2: which of N Z V C (CCR bits) they
+     * give; byte 3: 0, or the low byte of EFLAGS whose CF is X. Always 0
+     * outside translated code. */
+    uint32_t jit_ccr;
 
     uint8_t pages[RELEVO_PAGE_COUNT];   /* relevo_page_kind per page */
     relevo_handler *table;              /* 65 536 handlers */
@@ -362,5 +368,21 @@ unsigned interp_fill_table(relevo_handler *table, relevo_model model,
 /* interp/ops_fpu.c: the FPU after a reset (registers NaN, FPCR, FPSR and
  * FPIAR 0, null state). */
 void fpu_reset(relevo_cpu *cpu);
+
+/* interp/ops_fpu.c, for the JIT: the condition of the FBcc at `pc` with
+ * predicate `pred` (0-0x1F), as op_fbcc evaluates it (FPIAR, BSUN in the
+ * FPSR). Only when no exception can be taken: none pending, BSUN not
+ * enabled. */
+bool fpu_jit_branch(relevo_cpu *cpu, uint32_t pc, unsigned pred);
+
+/* interp/ops_fpu.c, for the JIT, under the same condition: the general
+ * FPU instruction at `pc` with command word and effective address field
+ * `cmd_ea` (cmd | ea << 16): FPm to FPn, <ea> to FPn and FPn to <ea>, not
+ * packed nor FMOVECR, and only what this FPU executes. `value`: the
+ * masked address of a memory operand the caller has checked (and whose
+ * An it moves itself), or the value of a Dn source. Returns what goes to
+ * a Dn destination. */
+uint32_t fpu_jit_op(relevo_cpu *cpu, uint32_t pc, uint32_t cmd_ea,
+                    uint32_t value);
 
 #endif /* RELEVO_CPU_H */

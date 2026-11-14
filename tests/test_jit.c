@@ -64,6 +64,8 @@ static bool jt_init(jt *t, relevo_model model, relevo_engine engine)
     t->mem = calloc(1, MEM_SIZE);
     relevo_config cfg = {0};
     cfg.model = model;
+    cfg.fpu = model == RELEVO_68020 ? RELEVO_FPU_68882
+            : model == RELEVO_68040 ? RELEVO_FPU_INTERNAL : RELEVO_FPU_NONE;
     cfg.engine = engine;
     cfg.memory = t->mem;
     cfg.memory_size = MEM_SIZE;
@@ -205,7 +207,7 @@ void test_jit_self_modifying(void)
 }
 
 /* An access to a host page inside a block goes to the host function once,
- * and the block's other instructions still run. */
+ * from the block (no bail), and the block's other instructions still run. */
 void test_jit_host_page(void)
 {
     jt t;
@@ -227,7 +229,9 @@ void test_jit_host_page(void)
     CHECK_EQ(relevo_instructions(t.cpu), 5);
     jit_stats s;
     jit_get_stats(t.cpu, &s);
-    CHECK_EQ(s.bails, 1);
+    CHECK_EQ(s.bails, 0);
+    CHECK_EQ(s.host, 1);
+    CHECK_EQ(s.interp, 0);
     jt_free(&t);
 }
 
@@ -436,5 +440,95 @@ void test_jit_cpush(void)
     t.r->a[7] = STACK;
     CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
     CHECK_EQ(t.r->d[1], 7);
+    jt_free(&t);
+}
+
+/* What R7 added to the translator is translated (and not left to the
+ * interpreter). */
+void test_jit_translated(void)
+{
+    static const struct { relevo_model model; uint16_t w[3]; } ops[] = {
+        { RELEVO_68000, { 0x4AD0 } },                   /* tas (a0) */
+        { RELEVO_68000, { 0x4181 } },                   /* chk.w d1,d0 */
+        { RELEVO_68020, { 0x4101 } },                   /* chk.l d1,d0 */
+        { RELEVO_68020, { 0x0ED0, 0x0040 } },           /* cas.l d0,d1,(a0) */
+        { RELEVO_68000, { 0x01C8, 0x0004 } },           /* movep.l d0,4(a0) */
+        { RELEVO_68000, { 0x0348, 0x0001 } },           /* movep.l 1(a0),d1 */
+        { RELEVO_68000, { 0xC109 } },                   /* abcd -(a1),-(a0) */
+        { RELEVO_68000, { 0x8109 } },                   /* sbcd -(a1),-(a0) */
+        { RELEVO_68000, { 0x4818 } },                   /* nbcd (a0)+ */
+        { RELEVO_68020, { 0xF200, 0x0422 } },           /* fadd.x fp1,fp0 */
+        { RELEVO_68020, { 0xF210, 0x5400 } },           /* fmove.d (a0),fp0 */
+        { RELEVO_68020, { 0xF218, 0x6400 } },           /* fmove.s fp0,(a0)+ */
+        { RELEVO_68020, { 0xF200, 0x4038 } },           /* fcmp.l d0,fp0 */
+        { RELEVO_68020, { 0xF292, 0x0010 } },           /* fbgt */
+        { RELEVO_68040, { 0xF200, 0x0462 } },           /* fsadd.x fp1,fp0 */
+    };
+    for (size_t i = 0; i < sizeof ops / sizeof *ops; i++) {
+        jt t;
+        if (!jt_init(&t, ops[i].model, RELEVO_ENGINE_JIT))
+            return;
+        put_code(t.mem, CODE, ops[i].w, 3);
+        CHECK(jit_translatable(t.cpu, CODE));
+        jt_free(&t);
+    }
+    /* Left to the interpreter: fsin.x fp1,fp0; on the 68040, line F. */
+    static const uint16_t fsin[] = { 0xF200, 0x040E };
+    jt t;
+    if (!jt_init(&t, RELEVO_68020, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, CODE, fsin, 2);
+    CHECK(!jit_translatable(t.cpu, CODE));
+    jt_free(&t);
+}
+
+/* A host function that patches the code of the block that is running (and
+ * says so with relevo_invalidate) gets the new code run. */
+static void patch_write(void *ctx, uint32_t addr, uint32_t v, unsigned size)
+{
+    jt *t = ctx;
+    (void)addr;
+    (void)v;
+    (void)size;
+    put16(t->mem, CODE + 2, 0x7202);                    /* moveq #2,d1 */
+    relevo_invalidate(t->cpu, CODE + 2, 2);
+    t->writes++;
+}
+
+void test_jit_host_patches_block(void)
+{
+    /* move.l d0,(a0); moveq #1,d1; rts */
+    static const uint16_t code[] = { 0x2080, 0x7201, 0x4E75 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68020, RELEVO_ENGINE_JIT))
+        return;
+    relevo_destroy(t.cpu);
+    relevo_config cfg = {0};
+    cfg.model = RELEVO_68020;
+    cfg.engine = RELEVO_ENGINE_JIT;
+    cfg.memory = t.mem;
+    cfg.memory_size = MEM_SIZE;
+    cfg.options = RELEVO_OPT_EXIT_ON_PC_ZERO;
+    cfg.host.ctx = &t;
+    cfg.host.write = patch_write;
+    t.cpu = relevo_create(&cfg);
+    t.r = relevo_get_regs(t.cpu);
+    CHECK_EQ(relevo_map(t.cpu, 0xD0000, RELEVO_PAGE_SIZE, RELEVO_PAGE_HOST),
+             0);
+    for (int k = 0; k < 2; k++) {
+        put_code(t.mem, CODE, code, 3);
+        relevo_invalidate(t.cpu, CODE, 6);
+        t.r->a[7] = STACK;
+        t.r->pc = CODE;
+        t.r->a[0] = 0xD0000;
+        t.r->d[1] = 0;
+        CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
+        CHECK_EQ(t.r->d[1], 2);
+    }
+    CHECK_EQ(t.writes, 2);
+    jit_stats s;
+    jit_get_stats(t.cpu, &s);
+    CHECK_EQ(s.host, 2);
+    CHECK(s.dropped >= 2);
     jt_free(&t);
 }

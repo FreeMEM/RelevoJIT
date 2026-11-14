@@ -25,6 +25,7 @@
  * they start, with a mask of the 64-byte chunks of each page that hold
  * translated code, so that a write finds the blocks it touches quickly.
  */
+#include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -136,6 +137,8 @@ bool jit_create(relevo_cpu *c)
     j->links_used = 1;
     j->has_movbe = jit_backend_has_movbe();
     j->movbe = j->has_movbe;
+    j->has_lahf = jit_backend_has_lahf();
+    j->lazy = j->has_lahf;
     bool ok = write_begin(j);
     ok = ok && jit_backend_init(c, j);
     if (j->write_depth)
@@ -416,17 +419,64 @@ int jit_access_check(relevo_cpu *c, uint32_t addr, uint32_t size_write)
     uint64_t lo = addr, hi = lo + size;
     if (hi - 1 > c->addr_mask)
         return 0;
+    bool direct = true;
     for (uint64_t p = lo >> RELEVO_PAGE_SHIFT; p <= (hi - 1) >> RELEVO_PAGE_SHIFT;
          p++) {
         uint8_t kind = c->pages[p];
+        if (kind == RELEVO_PAGE_NONE)
+            return 0;
         if (write ? kind != RELEVO_PAGE_RAM && kind != PAGE_RAM_CODE
                   : !page_direct_read(kind))
-            return 0;
+            direct = false;
     }
+    if (!direct)
+        return 2;
     if (write && may_hit_code(c->jit, lo, hi)
         && find_overlap(c->jit, lo, hi) != NULL)
         return 0;
     return 1;
+}
+
+/* Runs the instruction at the PC in the interpreter, for a block that met
+ * a host page (or a ROM write). An instruction with other memory operands
+ * than the one checked may take a bus or address error: that goes through
+ * a setjmp() of its own here, so a fault never unwinds the block. One with
+ * just that operand cannot fault (jit_access_check() found no missing page
+ * and the block checked the alignment), and skips the setjmp. Host
+ * functions may change the translations (relevo_invalidate(),
+ * relevo_map(), writes into code); that takes effect at once, and the
+ * block then leaves at once, through code that nothing changed (no
+ * translation happens before the dispatcher runs again), so it never runs
+ * stale code. Returns 0 if the block may go on to `next`, 1 if it must
+ * leave for the dispatcher. */
+int jit_host_step(relevo_cpu *c, uint32_t next, int may_fault)
+{
+    jit_state *j = c->jit;
+    jit_ccr_flush(c);
+    uint64_t flushes = j->stats.flushes, dropped = j->stats.dropped;
+    int fault = 0;
+    if (!may_fault) {
+        cpu_interp_step(c);
+        c->count--;             /* the dispatcher counts it, by the budget */
+    } else {
+        jmp_buf saved;
+        memcpy(saved, c->fault_jmp, sizeof saved);
+        if (setjmp(c->fault_jmp) == 0) {
+            cpu_interp_step(c);
+            c->count--;
+        } else {
+            /* A group 0 exception ended the instruction (relevo_run()). */
+            fault = 1;
+            if (c->in_insn) {
+                c->in_insn = false;
+                c->budget--;
+            }
+        }
+        memcpy(c->fault_jmp, saved, sizeof saved);
+    }
+    j->stats.host++;
+    return fault || c->exiting || c->halted || c->r.pc != next
+        || j->stats.flushes != flushes || j->stats.dropped != dropped;
 }
 
 /* ---- Blocks ----------------------------------------------------------- */
@@ -587,6 +637,8 @@ relevo_status jit_run_loop(relevo_cpu *c)
                 uint64_t budget = c->budget;
                 uint64_t r = jit_backend_enter(c, j, b->code);
                 c->count += budget - c->budget;
+                if (c->jit_ccr != 0)
+                    jit_ccr_flush(c);
                 if ((uint32_t)r == JIT_EXIT_BAIL) {
                     j->stats.bails++;
                     j->force_interp = true;
@@ -598,6 +650,10 @@ relevo_status jit_run_loop(relevo_cpu *c)
                     link_pc = c->r.pc;
                     link_flushes = j->stats.flushes;
                 }
+                if (UNLIKELY(c->exiting))
+                    return c->exit;
+                if (UNLIKELY(c->halted))
+                    return RELEVO_HALTED;
                 if (UNLIKELY(pc0 && c->r.pc == 0))
                     return RELEVO_EXIT_PC_ZERO;
                 continue;
@@ -629,6 +685,31 @@ void jit_set_movbe(relevo_cpu *c, bool on)
         return;
     c->jit->movbe = on && c->jit->has_movbe;
     jit_flush(c);
+}
+
+void jit_set_lazy(relevo_cpu *c, bool on)
+{
+    if (c->jit == NULL)
+        return;
+    c->jit->lazy = on && c->jit->has_lahf;
+    jit_flush(c);
+}
+
+void jit_ccr_flush(relevo_cpu *c)
+{
+    uint32_t r = c->jit_ccr;
+    unsigned m = (r >> 16) & JF_NZVC, x = r >> 24;
+    uint16_t sr = c->r.sr;
+    if (m != 0) {
+        unsigned fl = (r >> 8) & 0xFF;
+        unsigned v = ((fl >> 7) & 1) << 3 | ((fl >> 6) & 1) << 2
+                   | (r & 1) << 1 | (fl & 1);
+        sr = (uint16_t)((sr & ~m) | (v & m));
+    }
+    if (x != 0)
+        sr = (uint16_t)((sr & ~JF_X) | (x & 1) << 4);
+    c->r.sr = sr;
+    c->jit_ccr = 0;
 }
 
 bool jit_translatable(relevo_cpu *c, uint32_t pc)

@@ -56,11 +56,14 @@ With `RELEVO_OPT_EXIT_ON_PC_ZERO`, `relevo_run()` returns `RELEVO_EXIT_PC_ZERO` 
 the host can call 68k code by pushing 0 as its return address (as Emu68 does). The host can also take line A and
 line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_f`).
 
-`cfg.engine = RELEVO_ENGINE_JIT` selects the JIT (x86-64 hosts; `relevo_create()` returns NULL elsewhere). It gives
-the same results as the interpreter: what it does not translate, and every access that is not plain RAM (or ROM, to
-read), runs in the interpreter. Writes by the 68k code (or through `relevo_write()`) into code it has translated are
-caught; when the host changes code by writing the memory block directly, it calls `relevo_invalidate()` for that
-range (as a 68040 program flushes its caches).
+`cfg.engine = RELEVO_ENGINE_JIT` selects the JIT (x86-64 hosts: Linux and other Unix systems; the Windows code
+memory is written but not yet tried; `relevo_create()` returns NULL elsewhere). It gives the same results as the
+interpreter: what it does not translate, and every access that is not plain RAM (or ROM, to read), runs in the
+interpreter, called from the translated code for host pages. Host functions may call `relevo_invalidate()` and
+`relevo_map()`. The FPU's common instructions run from translated code too, with the same software arithmetic. Writes
+by the 68k code (or through `relevo_write()`) into code it has translated are caught; when the host changes code by
+writing the memory block directly, it calls `relevo_invalidate()` for that range (as a 68040 program flushes its
+caches).
 
 With `cfg.fpu` the 68020 and 68030 get a 68881 or 68882 and the 68040 and 68060 their own FPU, in extended
 precision computed in software (`src/fpx*.c`); link with `-lm`, which the transcendental functions use.
