@@ -16,7 +16,7 @@ errors with the 68000's long frame, trace, autovectored interrupts, `STOP`, doub
 data movement and program control instructions, which pass their SingleStepTests/m68000 files entirely, cycles
 included. Arithmetic, logic, shifts, bit operations, BCD, multiply and divide are next.
 
-It is the 68k engine of AlborOS on x86, in the same way Emu68 is on ARM.
+It is the 68k engine of UsirOS on x86, in the same way Emu68 is on ARM.
 
 ## Building
 
