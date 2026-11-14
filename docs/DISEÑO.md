@@ -7,7 +7,7 @@ little-endian, dando la vuelta a los bytes en cada acceso.
 
 ## Qué es
 
-Una biblioteca en C que ejecuta código del Motorola 680x0 en x86-64. Quien la usa (UsirOS, un emulador, un
+Una biblioteca en C que ejecuta código del Motorola 680x0 en x86-64. Quien la usa (DashOS, un emulador, un
 sistema) le da la memoria, los registros y unas funciones para lo que no es memoria normal (los chips, las
 llamadas a lo nativo). RelevoJIT no sabe nada del Amiga: no emula chips, ni carga ROM, ni arranca sola.
 
@@ -38,7 +38,7 @@ Una cabecera, `include/relevo.h`. Esbozo (lo fija la tarea R1):
   y escritura del anfitrión (los chips del Amiga en `0xDFF000`, los CIA). Así el camino rápido es un acceso directo,
   y el lento una llamada.
 - **Excepciones y trampas.** La línea A y la línea F pueden ir a una función del anfitrión antes que al vector (las
-  llamadas nativas de UsirOS, como el parche 0002 de Emu68). Las demás excepciones van por el vector, como en un 68k.
+  llamadas nativas de DashOS, como el parche 0002 de Emu68). Las demás excepciones van por el vector, como en un 68k.
 - **Interrupciones.** `relevo_set_ipl(cpu, nivel)`: el anfitrión pone el nivel; la CPU lo atiende entre
   instrucciones (intérprete) o entre bloques (JIT).
 - **Ejecutar.** `relevo_run(cpu, presupuesto)`: corre hasta gastar el presupuesto (instrucciones o ciclos), hasta
@@ -55,7 +55,7 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
   CPU según el modelo (lo que no existe en ese modelo, a la excepción de instrucción ilegal o de línea F).
 - Banderas calculadas al momento (es la referencia: nada de pereza).
 - Ciclos del 68000 contados según el manual, para quien necesite exactitud de tiempo (la máquina Amiga entera de
-  UsirOS, S18). En el resto de modelos, aproximados.
+  DashOS, S18). En el resto de modelos, aproximados.
 
 ## El JIT x86-64
 
@@ -66,7 +66,7 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
   guarda los cambiados al salir.
 - **Memoria.** Acceso directo `[base + dirección]` con `MOVBE` (o `BSWAP`/`ROL` si la CPU no lo tiene, se elige al
   arrancar). Antes, una comprobación de la tabla de páginas para los accesos a los chips, que se puede quitar cuando
-  el anfitrión garantiza que esa zona da un fallo de página (UsirOS lo hará, S18).
+  el anfitrión garantiza que esa zona da un fallo de página (DashOS lo hará, S18).
 - **Banderas.** N, Z, V y C son SF, ZF, OF y CF de x86 (en la resta, CF es el préstamo, como en el 68k). Se guardan
   solo cuando alguien las lee: análisis hacia atrás dentro del bloque, como Emu68. X va aparte.
 - **Salida del bloque.** Encadenado directo al siguiente bloque cuando se conoce el destino; si no, vuelta al bucle,
@@ -80,7 +80,7 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
 2. **Diferencial intérprete contra JIT**, con estados al azar, por instrucción.
 3. **Banco contra el oráculo** (`tools/oraculo/`, R3a): programas generados con cientos de casos por instrucción,
    en FS-UAE con el Kickstart real (68020 y 68040), en Emu68 y en RelevoJIT; `make test` compara con lo guardado.
-4. **Programas 68k** del banco de UsirOS (`jit-host/pruebas68k`), contra Emu68 en `qemu-aarch64_be` y contra el
+4. **Programas 68k** del banco de DashOS (`jit-host/pruebas68k`), contra Emu68 en `qemu-aarch64_be` y contra el
    oráculo de FS-UAE con el Kickstart real (`tools/emu_run.py` de Dash).
 
 ## Fases
@@ -95,7 +95,7 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
 | R5 | Banco diferencial contra Emu68 y FS-UAE | Mismas salidas en los programas de `pruebas68k` |
 | R6 | JIT x86-64: emisor, bloques, registros, memoria, banderas, encadenado | Diferencial contra el intérprete limpio |
 | R7 | JIT de la FPU, rendimiento | Medido contra el intérprete |
-| R8 | En UsirOS: la caja Amiga en x86 | Tarea X7 de UsirOS |
+| R8 | En DashOS: la caja Amiga en x86 | Tarea X7 de DashOS |
 
 ## Lengua
 
