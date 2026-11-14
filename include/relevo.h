@@ -246,7 +246,11 @@ void relevo_set_ipl(relevo_cpu *cpu, unsigned level);
 void relevo_request_stop(relevo_cpu *cpu);
 
 /* Tells the CPU that 68k code in [address, address + size) changed, so that
- * translated code is dropped. The interpreter needs nothing. */
+ * translated code is dropped. The JIT notices by itself the writes of the
+ * 68k code and those made through relevo_write(); a host that writes the
+ * memory block directly (loading a program, patching code) calls this for
+ * what it changed, as a 68040 program flushes its caches. The interpreter
+ * needs nothing. */
 void relevo_invalidate(relevo_cpu *cpu, uint32_t address, uint32_t size);
 
 /* Memory accesses as the CPU does them (page table, address mask, host

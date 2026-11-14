@@ -92,6 +92,12 @@
     X(jit_address_error)        \
     X(jit_interrupt)            \
     X(jit_calls)                \
+    X(jit_chaining)             \
+    X(jit_indirect)             \
+    X(jit_budget_chained)       \
+    X(jit_write_near_code)      \
+    X(jit_write_other_block)    \
+    X(jit_cpush)                \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

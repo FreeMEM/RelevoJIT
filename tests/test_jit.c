@@ -140,7 +140,8 @@ void test_jit_budget(void)
     jt_free(&t);
 }
 
-/* Code that changes between runs is translated again (the hash). */
+/* Code the host changes between runs is translated again once it says so
+ * (relevo_invalidate()), or at once if it writes through relevo_write(). */
 void test_jit_code_change(void)
 {
     jt t;
@@ -152,10 +153,16 @@ void test_jit_code_change(void)
     CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
     CHECK_EQ(t.r->d[0], 1);
     put16(t.mem, CODE, 0x7002);                         /* moveq #2,d0 */
+    relevo_invalidate(t.cpu, CODE, 2);
     t.r->pc = CODE;
     t.r->a[7] = STACK;
     CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
     CHECK_EQ(t.r->d[0], 2);
+    relevo_write(t.cpu, CODE, 0x7003, 2);               /* moveq #3,d0 */
+    t.r->pc = CODE;
+    t.r->a[7] = STACK;
+    CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[0], 3);
     jt_free(&t);
 }
 
@@ -288,5 +295,146 @@ void test_jit_calls(void)
     CHECK_EQ(t.r->d[0], 2);
     CHECK_EQ(t.r->a[7], STACK + 4);
     CHECK_EQ(relevo_instructions(t.cpu), 8);
+    jt_free(&t);
+}
+
+/* Two blocks branching to each other are chained: they run without
+ * going back to the dispatcher. */
+void test_jit_chaining(void)
+{
+    /* moveq #0,d0; move.l #10000,d1; .a: addq.l #1,d0; bra.s .b; nop;
+     * .b: subq.l #1,d1; bne.s .a; rts */
+    static const uint16_t code[] = { 0x7000, 0x223C, 0x0000, 0x2710, 0x5280,
+                                     0x6002, 0x4E71, 0x5381, 0x66F6,
+                                     0x4E75 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68000, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, CODE, code, 10);
+    CHECK_EQ(relevo_run(t.cpu, 1000000), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[0], 10000);
+    CHECK_EQ(t.r->d[1], 0);
+    CHECK_EQ(relevo_instructions(t.cpu), 2 + 4 * 10000 + 1);
+    jit_stats s;
+    jit_get_stats(t.cpu, &s);
+    CHECK(s.links >= 2);
+    CHECK(s.runs < 20);
+    jt_free(&t);
+}
+
+/* RTS finds its target in the cache of indirect jumps. */
+void test_jit_indirect(void)
+{
+    /* move.l #1000,d1; .l: bsr.s f; subq.l #1,d1; bne.s .l; rts; nop;
+     * f: addq.l #2,d0; rts */
+    static const uint16_t code[] = { 0x223C, 0x0000, 0x03E8, 0x6108, 0x5381,
+                                     0x66FA, 0x4E75, 0x4E71, 0x5480,
+                                     0x4E75 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68020, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, CODE, code, 10);
+    CHECK_EQ(relevo_run(t.cpu, 1000000), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[0], 2000);
+    CHECK_EQ(t.r->a[7], STACK + 4);
+    jit_stats s;
+    jit_get_stats(t.cpu, &s);
+    CHECK(s.runs < 20);
+    jt_free(&t);
+}
+
+/* The budget stays exact through chained blocks: the same state as the
+ * interpreter after any number of instructions. */
+void test_jit_budget_chained(void)
+{
+    static const uint16_t code[] = { 0x7000, 0x223C, 0x0000, 0x2710, 0x5280,
+                                     0x6002, 0x4E71, 0x5381, 0x66F6,
+                                     0x4E75 };
+    jt a, b;
+    if (!jt_init(&b, RELEVO_68000, RELEVO_ENGINE_JIT))
+        return;
+    CHECK(jt_init(&a, RELEVO_68000, RELEVO_ENGINE_INTERP));
+    put_code(a.mem, CODE, code, 10);
+    put_code(b.mem, CODE, code, 10);
+    static const uint64_t budgets[] = { 1, 2, 3, 5, 7, 64, 65, 100, 1001, 3 };
+    for (unsigned i = 0; i < sizeof budgets / sizeof *budgets; i++) {
+        relevo_status sa = relevo_run(a.cpu, budgets[i]);
+        relevo_status sb = relevo_run(b.cpu, budgets[i]);
+        CHECK_EQ(sb, sa);
+        CHECK_EQ(b.r->pc, a.r->pc);
+        CHECK_EQ(b.r->d[0], a.r->d[0]);
+        CHECK_EQ(b.r->d[1], a.r->d[1]);
+        CHECK_EQ(b.r->sr, a.r->sr);
+        CHECK_EQ(relevo_instructions(b.cpu), relevo_instructions(a.cpu));
+    }
+    jt_free(&a);
+    jt_free(&b);
+}
+
+/* Writes to data next to the code (same page, same 64-byte chunk) run in
+ * the block: only writes into translated code leave it. */
+void test_jit_write_near_code(void)
+{
+    /* move.l #1000,d1; lea var(pc),a0; .l: addq.l #1,(a0); subq.l #1,d1;
+     * bne.s .l; rts; nop; var: dc.l 0 */
+    static const uint16_t code[] = { 0x223C, 0x0000, 0x03E8, 0x41FA, 0x000C,
+                                     0x5290, 0x5381, 0x66FA, 0x4E75,
+                                     0x4E71, 0x0000, 0x0000 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68020, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, CODE, code, 12);
+    CHECK_EQ(relevo_run(t.cpu, 100000), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(get32(t.mem, CODE + 0x14), 1000);
+    jit_stats s;
+    jit_get_stats(t.cpu, &s);
+    CHECK_EQ(s.bails, 0);
+    CHECK_EQ(s.dropped, 0);
+    jt_free(&t);
+}
+
+/* A block that writes into another block's code: the other one is
+ * dropped and translated again. */
+void test_jit_write_other_block(void)
+{
+    /* bsr.s f; move.w #$7205,$1012.w; bsr.s f; rts; nop; nop; nop;
+     * f ($1012): moveq #1,d1; rts                                         */
+    static const uint16_t code[] = { 0x6110, 0x31FC, 0x7205, 0x1012, 0x6108,
+                                     0x4E75, 0x4E71, 0x4E71, 0x4E71,
+                                     0x7201, 0x4E75 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68000, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, CODE, code, 11);
+    CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[1], 5);
+    CHECK_EQ(relevo_instructions(t.cpu), 8);
+    jit_stats s;
+    jit_get_stats(t.cpu, &s);
+    CHECK(s.dropped >= 1);
+    jt_free(&t);
+}
+
+/* CPUSHA on the 68040 drops what the host changed behind the CPU's back. */
+void test_jit_cpush(void)
+{
+    /* f ($2000): moveq #1,d1; rts. Run 1: jsr $2000; rts.
+     * Run 2 ($1100): cpusha bc; jsr $2000; rts                            */
+    static const uint16_t f[] = { 0x7201, 0x4E75 };
+    static const uint16_t run1[] = { 0x4EB9, 0x0000, 0x2000, 0x4E75 };
+    static const uint16_t run2[] = { 0xF4F8, 0x4EB9, 0x0000, 0x2000, 0x4E75 };
+    jt t;
+    if (!jt_init(&t, RELEVO_68040, RELEVO_ENGINE_JIT))
+        return;
+    put_code(t.mem, 0x2000, f, 2);
+    put_code(t.mem, CODE, run1, 4);
+    put_code(t.mem, 0x1100, run2, 5);
+    CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[1], 1);
+    put16(t.mem, 0x2000, 0x7207);                       /* moveq #7,d1 */
+    t.r->pc = 0x1100;
+    t.r->a[7] = STACK;
+    CHECK_EQ(relevo_run(t.cpu, 100), RELEVO_EXIT_PC_ZERO);
+    CHECK_EQ(t.r->d[1], 7);
     jt_free(&t);
 }

@@ -4,12 +4,14 @@
  * unmapped pages, ROM writes and accesses that cross a page boundary.
  */
 #include "cpu.h"
+#include "jit/jit.h"
 
 static uint32_t read_in_page(relevo_cpu *c, uint32_t addr, unsigned size)
 {
     switch (c->pages[addr >> RELEVO_PAGE_SHIFT]) {
     case RELEVO_PAGE_RAM:
-    case RELEVO_PAGE_ROM: {
+    case RELEVO_PAGE_ROM:
+    case PAGE_RAM_CODE: {
         uint32_t v = 0;
         for (unsigned i = 0; i < size; i++)
             v = v << 8 | c->mem[addr + i];
@@ -32,8 +34,11 @@ static void write_in_page(relevo_cpu *c, uint32_t addr, uint32_t v,
 {
     switch (c->pages[addr >> RELEVO_PAGE_SHIFT]) {
     case RELEVO_PAGE_RAM:
+    case PAGE_RAM_CODE:
         for (unsigned i = 0; i < size; i++)
             c->mem[addr + i] = (uint8_t)(v >> (8 * (size - 1 - i)));
+        if (c->pages[addr >> RELEVO_PAGE_SHIFT] == PAGE_RAM_CODE)
+            jit_code_written(c, addr, size);
         return;
     case RELEVO_PAGE_HOST:
         if (c->host.write)

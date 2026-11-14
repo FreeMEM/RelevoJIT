@@ -88,6 +88,7 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/jitdiff -m 68000 -n 20000 -k 12
 	$(BUILD)/jitdiff -m 68020 -n 20000 -k 12
 	$(BUILD)/jitdiff -m 68000 -n 5000 -k 12 -x
+	$(BUILD)/jitdiff -m 68040 -n 5000 -k 64
 	@if [ -f $(SST_DATA)/NOP.json ]; then \
 	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
 	    $(BUILD)/sst $(SST_DATA)/NOP.json; \
@@ -102,6 +103,7 @@ jitdiff: $(BUILD)/jitdiff
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 1 || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 16 || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -x || exit 1; \
+	    $(BUILD)/jitdiff -m $$m -n 50000 -k 64 || exit 1; \
 	done
 
 bench: $(BUILD)/bench
