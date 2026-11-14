@@ -15,14 +15,17 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   - [x] R2a: base, excepciones y movimiento y saltos (2026-11-14).
   - [x] R2b: aritmética y lógica, en `src/interp/ops_arith.c` (2026-11-14).
   - [x] R2c: desplazamientos, bits, BCD, MUL/DIV, en `ops_bits.c` y `ops_muldiv.c` (2026-11-14). Con todo junto, SingleStepTests/m68000 pasa 317 500 de 317 500, con ciclos.
-  - [ ] R2c: desplazamientos, bits, BCD, MUL/DIV, en `src/interp/ops_bits.c`. Todas las instrucciones, modos de dirección, excepciones (grupos 0, 1 y 2, error de
+  Todas las instrucciones, modos de dirección, excepciones (grupos 0, 1 y 2, error de
   dirección y de bus), modo supervisor, `STOP`, `TRACE`, interrupciones, ciclos del manual. Hecho cuando
   SingleStepTests/m68000 pasa entero (registros, memoria y, si se puede, ciclos). Se puede repartir por grupos de
   instrucciones entre dos agentes.
-- [ ] R3 **68010 a 68040 sin FPU.** VBR, `MOVEC`, `MOVES`, `RTD`; modos de dirección del 68020 (índice escalado,
-  indirectos con memoria); campos de bits; `MULx.L`, `DIVx.L`; `CAS`, `CAS2`; `CHK2`, `CMP2`; `PACK`, `UNPK`;
-  `EXTB.L`; `TRAPcc`; `MOVE16`; caché (`CACR`, `CPUSH`, `CINV`). Pruebas propias por instrucción, sacadas de los
-  manuales.
+- [~] R3 **68010 a 68040 sin FPU.** En dos partes a la vez, en worktrees aparte:
+  - [ ] R3a: el banco contra el oráculo (programas 68020 generados que corren en FS-UAE con el Kickstart real y en
+    Emu68 por `jit-host`, y comparan registros y memoria con RelevoJIT), y lo del 68010: VBR, `MOVEC`, `MOVES`, `RTD`,
+    marcos de excepción del 68010 en adelante (formatos 0, 2, 9, A, B del 020/030; 0, 2, 3, 4, 7 del 040).
+  - [ ] R3b: modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
+    `MULx.L`, `DIVx.L`, `EXTB.L`, `CHK.L`, `CHK2`, `CMP2`, `CAS`, `CAS2`, `TRAPcc`, `PACK`, `UNPK`, campos de bits,
+    `Bcc.L`, `LINK.L`, `MOVE16` y caché (`CACR`, `CPUSH`, `CINV`).
 - [ ] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
   extendida en software propio.
 - [ ] R5 **Banco diferencial.** Los programas de `dashos/jit-host/pruebas68k` en RelevoJIT, en Emu68
