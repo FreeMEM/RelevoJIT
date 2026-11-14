@@ -40,7 +40,9 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   - [x] R6b (2026-11-14): el resto de instrucciones enteras (las raras, al intérprete o a su manejador llamado desde
     el bloque), la palabra de extensión completa, encadenado de bloques y caché de saltos indirectos, invalidación
     por escritura en código (páginas marcadas, sin resumen), banderas pendientes en EFLAGS y `CMP`/`TST` con `Bcc`.
-- [ ] R7 **JIT de la FPU y rendimiento.**
+- [x] R7 **JIT de la FPU y rendimiento** (2026-11-14): banderas entre bloques en forma de x86, `TAS`, `CHK`, `CAS`,
+  `MOVEP` y BCD en memoria, páginas del anfitrión desde el bloque, la FPU común desde el bloque y la memoria de código
+  para Windows (escrita, sin probar).
 
 ## Bloqueos
 
@@ -605,3 +607,90 @@ Ficheros comunes tocados: `src/cpu.h` (`PAGE_RAM_CODE` y `page_direct_read`), `s
 página con código avisa al JIT), `include/relevo.h` (comentario de `relevo_invalidate`), `Makefile` (dos tandas más
 de `jitdiff`), `tests/tests.h`, `tests/sst_run.c` (`relevo_invalidate` al poner cada caso), `README.md` y
 `docs/DISEÑO.md`. No se tocaron `cpu.c`, `interp.h`, `table.c` ni `exception.c`.
+
+### 2026-11-14 — R7
+
+Hecho:
+
+- Banderas entre bloques. Las pendientes ya no pasan a SR en cada salida: se guardan como están, con `LAHF` y
+  `SETO`, en `cpu->jit_ccr` (el "registro"), con qué bits de N Z V C dan; X tiene su byte. Son cuatro o cinco
+  instrucciones que no tocan EFLAGS. Un `Bcc` las recupera con tres (`ADD AL,7Fh` para OF y `SAHF`). El bloque sabe
+  qué bits tiene seguro en R14 ("own") y cuáles en el registro; lo que lee de R14 sin saberlo pasa antes por un trozo
+  común que mezcla el registro. Un bloque que no toca las banderas deja el registro como está. El despachador lo
+  pasa a SR cuando un bloque vuelve. SR va en R14 de bloque a bloque: lo carga el trampolín y lo guarda la salida
+  común.
+- Sin `LAHF` en 64 bits (CPUID), como antes: a SR en cada salida. `jit_set_lazy()` lo elige para las pruebas.
+- `MOVEA`, `LEA`, `EXG`, `NOP` y `ADDA`/`SUBA` que se hacen con `LEA` (inmediato, o `ADDA` de registro) ya no
+  obligan a guardar las banderas pendientes.
+- Traducidas: `TAS`, `CHK.W`, `CHK.L`, `CAS` (B, W, L) y `MOVEP`. `ABCD`/`SBCD -(Ay),-(Ax)` y `NBCD` en memoria van al
+  manejador desde el bloque, con los bytes comprobados antes.
+- Páginas del anfitrión: el acceso ya no sale del bloque. `jit_access_check` da 2 para una página del anfitrión o
+  una escritura en ROM; el bloque deja el estado en la CPU y llama a `jit_host_step()`, que hace esa instrucción en
+  el intérprete. Después sigue al bloque siguiente por un salto encadenado. Las direcciones fijas del anfitrión
+  (`move.w #x,$dff096`) también se traducen ahora: van siempre por ese camino.
+- Invalidaciones desde una función del anfitrión: no se aplazan. Se hacen en el acto y el bloque sale en el acto
+  (si cambió la caché de traducciones, o el PC, o hubo excepción), por código que nadie ha tocado: no se traduce
+  nada hasta volver al despachador, y la memoria de código solo se reutiliza al traducir. Así `relevo_invalidate()`
+  y `relevo_map()` valen desde las funciones del anfitrión.
+- Fallos en esa instrucción (otro operando en una página vacía, un salto impar, el marco de una excepción en una
+  pila vacía): `jit_host_step` pone su propio `setjmp`, así que un `longjmp` nunca cruza el bloque. Si la
+  instrucción solo tiene ese acceso y no puede dar excepción, se salta el `setjmp` (un 25 % más rápido).
+- FPU desde el bloque: `FMOVE` entre registros y con memoria o Dn (L S X W D B), `FADD`, `FSUB`, `FMUL`, `FDIV`,
+  `FSQRT`, `FABS`, `FNEG`, `FCMP`, `FTST`, las formas `FSxxx`/`FDxxx` del 040 y `FBcc`. El bloque calcula y comprueba
+  la dirección, mueve An y lee o escribe Dn; `fpu_jit_op()` y `fpu_jit_branch()` (en `ops_fpu.c`) hacen el resto con
+  el mismo código que el intérprete (`fpx`). Nada de x87 ni SSE. Si hay una excepción pendiente o alguna habilitada en
+  el FPCR, la instrucción va al intérprete.
+- En `ops_fpu.c`: la cola de la aritmética y la conversión de salida son funciones aparte, para compartirlas, y la
+  tabla de códigos de operación es directa (antes, una búsqueda). El intérprete de FPU sube de 40 a 51 MIPS.
+- `codemem` para Windows: una sección mapeada dos veces (`CreateFileMappingW`, `MapViewOfFile`), o `VirtualAlloc`
+  con `VirtualProtect`. No hay `x86_64-w64-mingw32-gcc` aquí: solo comprobé la sintaxis con gcc y clang, `-D_WIN32` y
+  una `windows.h` mínima mía. Sin compilar ni probar en Windows.
+
+Pruebas nuevas:
+
+- `jitdiff`: FPU en 68020 y 68030 (68882) y 68040 (la suya). Registros de FPU al azar (ceros, infinitos, NaN,
+  desnormales, enteros), FPCR (a veces con excepciones habilitadas), FPSR, FPIAR, pendiente y estado nulo; compara
+  todo eso. Instrucciones de FPU al azar (también algunas que van al intérprete) y las enteras nuevas. Las funciones
+  del anfitrión a veces cambian código y llaman a `relevo_invalidate`, o a `relevo_map` (vacía todo) en mitad de un
+  bloque. `-e`: banderas a SR en cada salida.
+- `test_jit.c`: `jit_translated` (lo nuevo se traduce; `FSIN` no) y `jit_host_patches_block` (el anfitrión cambia
+  el código del bloque que corre). `jit_host_page` ahora espera el acceso desde el bloque, sin salida.
+- `bench`: dos programas, `fp` (68882) y `host` (una página del anfitrión), y `-m 68040`.
+- `make test` y `make jitdiff`: tandas con `-e`; `make jitdiff` también en 68030.
+
+Comprobado:
+
+- `make test` (101 pruebas, el oráculo con los dos motores, también los programas de FPU, y `jitdiff`) con gcc 16 y
+  clang 23, y con ASan y UBSan en los dos. `make sst` y `make sst JIT=1`: 317 500 de 317 500.
+- `make jitdiff` (25 tandas, 2,75 millones de casos) y otros 2,8 millones con FPU (68020, 68030, 68040; tres
+  semillas; bloques de 1 a 64; `-x` y `-e`): todos iguales.
+- Que una instrucción sin `setjmp` nunca falla: 2,4 millones de casos con un `abort()` puesto ahí; ninguno.
+- El camino de `mprotect` (sin memfd), forzado a mano: pruebas y `jitdiff` iguales.
+
+Velocidad (`make bench`, gcc -O2, millones de instrucciones 68k por segundo, 68020; el mejor de tres):
+
+| Programa | Intérprete | JIT R6b | JIT R7 |
+|---|---|---|---|
+| Bucle aritmético | 123 | 2152 | 3617 |
+| Copia de memoria | 118 | 998 | 1787 |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 133 | 1246 | 3193 |
+| Coma flotante (`FMOVE.L`, `FMUL`, `FADD`, `FCMP`, `FBLT`) | 40 / 51 | 40 | 76 |
+| Página del anfitrión (lee y escribe) | 103 | 126 | 143 |
+
+El intérprete de FPU pasa de 40 a 51 con la tabla nueva. "Bytes" sube 2,6 veces: casi todos sus bloques acaban
+en `Bcc` tras `CMP` o `TST`.
+
+Falta:
+
+- FPU: manda `fpx` (en `fp`, el JIT solo saca 1,5 veces al intérprete). Transcendentales, `FMOVEM`, registros de
+  control, `FScc`, `FDBcc`, `FINT`, empaquetado y todo con excepciones habilitadas siguen en el intérprete.
+- Páginas del anfitrión: manda el paso del intérprete (1,1 veces sobre R6b). Llamar a la función del anfitrión
+  directamente desde el bloque sería más rápido.
+- Siguen en el intérprete: desplazamientos con la cuenta en Dn (manejador), `MOVE` con SR, CCR y USP, `TRAP`, `RTE`,
+  `RTR`, `RTD`, `CHK2`, `CAS2`, `PACK`/`UNPK` en memoria.
+- Windows: sin probar. Con MSVC no hay CPUID aquí: ni `MOVBE` ni banderas en forma de x86.
+
+Ficheros comunes tocados: `src/cpu.h` (campo `jit_ccr`; `fpu_jit_branch` y `fpu_jit_op`), `src/interp/ops_fpu.c`
+(lo de arriba), `Makefile` (tandas de `jitdiff`), `README.md`, `docs/DISEÑO.md`, `tests/tests.h`, `tests/bench.c`,
+`tests/jitdiff.c` y `tests/test_jit.c`. No se tocaron `include/relevo.h`, `cpu.c`, `memory.c`, `exception.c`,
+`interp.h` ni `table.c`.

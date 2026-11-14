@@ -68,9 +68,15 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
   guarda los cambiados al salir.
 - **Memoria.** Acceso directo `[base + dirección]` con `MOVBE` (o `BSWAP`/`ROL` si la CPU no lo tiene, se elige al
   arrancar). Antes, una comprobación de la tabla de páginas para los accesos a los chips, que se puede quitar cuando
-  el anfitrión garantiza que esa zona da un fallo de página (DashOS lo hará, S18).
+  el anfitrión garantiza que esa zona da un fallo de página (DashOS lo hará, S18). Un acceso a una página del
+  anfitrión no sale del bloque: el bloque llama al intérprete para esa instrucción y sigue al bloque siguiente (R7).
+  Si el anfitrión cambia las traducciones en esa llamada, el bloque sale en el acto por código que nadie ha tocado.
 - **Banderas.** N, Z, V y C son SF, ZF, OF y CF de x86 (en la resta, CF es el préstamo, como en el 68k). Se guardan
-  solo cuando alguien las lee: análisis hacia atrás dentro del bloque, como Emu68. X va aparte.
+  solo cuando alguien las lee: análisis hacia atrás dentro del bloque, como Emu68. X va aparte. Entre bloques
+  quedan en forma de x86 (`LAHF` y `SETO`, en `cpu->jit_ccr`) y se pasan a SR solo cuando alguien las lee (R7).
+- **FPU.** Las instrucciones comunes (`FMOVE` con memoria y registros, `FADD`, `FSUB`, `FMUL`, `FDIV`, `FSQRT`,
+  `FABS`, `FNEG`, `FCMP`, `FTST`, `FBcc`) se llaman desde el bloque, con la misma aritmética de `fpx` que el
+  intérprete. Si hay una excepción pendiente o alguna habilitada en el FPCR, van al intérprete.
 - **Salida del bloque.** Encadenado directo al siguiente bloque cuando se conoce el destino (el salto se parchea la
   primera vez); los saltos indirectos (`RTS`, `JMP (An)`) miran una caché pequeña de destinos; si no, vuelta al
   bucle, que mira interrupciones y busca en la caché. Cada bloque mira al entrar el presupuesto y si hay que atender

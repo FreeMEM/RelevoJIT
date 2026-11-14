@@ -362,6 +362,25 @@ static inline void x_bt_rr(xbuf *b, int base, int bit)
 
 static inline void x_pushfq(xbuf *b) { x_b(b, 0x9C); }
 
+/* LAHF, SAHF: AH and SF ZF AF PF CF (needs the LAHF-SAHF CPUID bit). */
+static inline void x_lahf(xbuf *b) { x_b(b, 0x9F); }
+static inline void x_sahf(xbuf *b) { x_b(b, 0x9E); }
+
+/* MOV [m], AH: no REX, so m's registers must be among RAX-RDI. */
+static inline void x_store_ah(xbuf *b, xmem m)
+{
+    x_b(b, 0x88);
+    x_modrm_mem(b, 4, m);
+}
+
+/* TEST dword [m], imm32 */
+static inline void x_test_mi32(xbuf *b, xmem m, uint32_t imm)
+{
+    uint8_t o = 0xF7;
+    x_rm(b, 4, &o, 1, 0, m, false);
+    x_d(b, imm);
+}
+
 static inline void x_push(xbuf *b, int r)
 {
     if (r >= 8)

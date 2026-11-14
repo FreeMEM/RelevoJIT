@@ -63,8 +63,10 @@ struct jit_state {
     const uint8_t *enter;           /* the trampoline into a block (RX) */
     size_t exit_off;                /* the common exit, in mem */
     size_t check_off;               /* the access check stub, in mem */
+    size_t ccr_off;                 /* the stub that merges cpu->jit_ccr */
     size_t base_used;               /* what flushes keep (the trampoline) */
     bool has_movbe, movbe;
+    bool has_lahf, lazy;            /* condition codes kept in x86 form */
     bool force_interp;              /* next instruction: interpreter */
     jit_block *hash[JIT_HASH_SIZE];
     jit_block *pool;
@@ -99,6 +101,8 @@ enum {
 
 bool jit_backend_available(void);
 bool jit_backend_has_movbe(void);
+/* LAHF and SAHF in 64-bit mode: what the lazy condition codes use. */
+bool jit_backend_has_lahf(void);
 /* Writes the trampoline and the shared stubs at the start of the
  * executable memory. */
 bool jit_backend_init(relevo_cpu *cpu, jit_state *j);
@@ -112,7 +116,17 @@ uint64_t jit_backend_enter(relevo_cpu *cpu, jit_state *j, const uint8_t *code);
 /* Called by translated code (through the check stub) for an access the
  * map does not clear at once: 1 if `size` bytes at the masked address
  * `addr` can be read (or written, `write`) directly in the memory block,
- * which for a write means RAM with no translated code. */
+ * which for a write means RAM with no translated code; 0 if the
+ * instruction must be left to the interpreter (a missing page, a write
+ * into translated code). */
 int jit_access_check(relevo_cpu *cpu, uint32_t addr, uint32_t size_write);
+/* jit_access_check() gives 2 for an access that is not plain but cannot
+ * fault (a host page, a ROM write): the block calls this to run the
+ * instruction at regs.pc in the interpreter (jit.c). `may_fault`: the
+ * instruction has other memory operands. */
+int jit_host_step(relevo_cpu *cpu, uint32_t next, int may_fault);
+
+/* Merges cpu->jit_ccr into r.sr and clears it (the C side of the stub). */
+void jit_ccr_flush(relevo_cpu *cpu);
 
 #endif

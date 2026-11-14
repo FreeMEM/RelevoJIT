@@ -255,58 +255,54 @@ typedef struct opinfo {
 
 static opinfo opmode_info(unsigned m)
 {
-    static const struct { uint8_t mode, kind, func, soft; } t[] = {
-        { 0x00, K_MONADIC, 0, 0 },          /* FMOVE */
-        { 0x01, K_MONADIC, 0, 1 },          /* FINT */
-        { 0x02, K_TRANS, FPX_SINH, 2 },
-        { 0x03, K_MONADIC, 0, 1 },          /* FINTRZ */
-        { 0x04, K_MONADIC, 0, 0 },          /* FSQRT */
-        { 0x06, K_TRANS, FPX_LOGNP1, 2 },
-        { 0x08, K_TRANS, FPX_ETOXM1, 2 },
-        { 0x09, K_TRANS, FPX_TANH, 2 },
-        { 0x0A, K_TRANS, FPX_ATAN, 2 },
-        { 0x0C, K_TRANS, FPX_ASIN, 2 },
-        { 0x0D, K_TRANS, FPX_ATANH, 2 },
-        { 0x0E, K_TRANS, FPX_SIN, 2 },
-        { 0x0F, K_TRANS, FPX_TAN, 2 },
-        { 0x10, K_TRANS, FPX_ETOX, 2 },
-        { 0x11, K_TRANS, FPX_TWOTOX, 2 },
-        { 0x12, K_TRANS, FPX_TENTOX, 2 },
-        { 0x14, K_TRANS, FPX_LOGN, 2 },
-        { 0x15, K_TRANS, FPX_LOG10, 2 },
-        { 0x16, K_TRANS, FPX_LOG2, 2 },
-        { 0x18, K_MONADIC, 0, 0 },          /* FABS */
-        { 0x19, K_TRANS, FPX_COSH, 2 },
-        { 0x1A, K_MONADIC, 0, 0 },          /* FNEG */
-        { 0x1C, K_TRANS, FPX_ACOS, 2 },
-        { 0x1D, K_TRANS, FPX_COS, 2 },
-        { 0x1E, K_MONADIC, 0, 2 },          /* FGETEXP */
-        { 0x1F, K_MONADIC, 0, 2 },          /* FGETMAN */
-        { 0x20, K_DYADIC, 0, 0 },           /* FDIV */
-        { 0x21, K_DYADIC, 0, 2 },           /* FMOD */
-        { 0x22, K_DYADIC, 0, 0 },           /* FADD */
-        { 0x23, K_DYADIC, 0, 0 },           /* FMUL */
-        { 0x24, K_DYADIC, 0, 2 },           /* FSGLDIV */
-        { 0x25, K_DYADIC, 0, 2 },           /* FREM */
-        { 0x26, K_DYADIC, 0, 2 },           /* FSCALE */
-        { 0x27, K_DYADIC, 0, 2 },           /* FSGLMUL */
-        { 0x28, K_DYADIC, 0, 0 },           /* FSUB */
-        { 0x38, K_CMP, 0, 0 },
-        { 0x3A, K_TST, 0, 0 },
+    static const opinfo t[0x40] = {
+        [0x00] = { K_MONADIC, 0, 0 },           /* FMOVE */
+        [0x01] = { K_MONADIC, 0, 1 },           /* FINT */
+        [0x02] = { K_TRANS, FPX_SINH, 2 },
+        [0x03] = { K_MONADIC, 0, 1 },           /* FINTRZ */
+        [0x04] = { K_MONADIC, 0, 0 },           /* FSQRT */
+        [0x06] = { K_TRANS, FPX_LOGNP1, 2 },
+        [0x08] = { K_TRANS, FPX_ETOXM1, 2 },
+        [0x09] = { K_TRANS, FPX_TANH, 2 },
+        [0x0A] = { K_TRANS, FPX_ATAN, 2 },
+        [0x0C] = { K_TRANS, FPX_ASIN, 2 },
+        [0x0D] = { K_TRANS, FPX_ATANH, 2 },
+        [0x0E] = { K_TRANS, FPX_SIN, 2 },
+        [0x0F] = { K_TRANS, FPX_TAN, 2 },
+        [0x10] = { K_TRANS, FPX_ETOX, 2 },
+        [0x11] = { K_TRANS, FPX_TWOTOX, 2 },
+        [0x12] = { K_TRANS, FPX_TENTOX, 2 },
+        [0x14] = { K_TRANS, FPX_LOGN, 2 },
+        [0x15] = { K_TRANS, FPX_LOG10, 2 },
+        [0x16] = { K_TRANS, FPX_LOG2, 2 },
+        [0x18] = { K_MONADIC, 0, 0 },           /* FABS */
+        [0x19] = { K_TRANS, FPX_COSH, 2 },
+        [0x1A] = { K_MONADIC, 0, 0 },           /* FNEG */
+        [0x1C] = { K_TRANS, FPX_ACOS, 2 },
+        [0x1D] = { K_TRANS, FPX_COS, 2 },
+        [0x1E] = { K_MONADIC, 0, 2 },           /* FGETEXP */
+        [0x1F] = { K_MONADIC, 0, 2 },           /* FGETMAN */
+        [0x20] = { K_DYADIC, 0, 0 },            /* FDIV */
+        [0x21] = { K_DYADIC, 0, 2 },            /* FMOD */
+        [0x22] = { K_DYADIC, 0, 0 },            /* FADD */
+        [0x23] = { K_DYADIC, 0, 0 },            /* FMUL */
+        [0x24] = { K_DYADIC, 0, 2 },            /* FSGLDIV */
+        [0x25] = { K_DYADIC, 0, 2 },            /* FREM */
+        [0x26] = { K_DYADIC, 0, 2 },            /* FSCALE */
+        [0x27] = { K_DYADIC, 0, 2 },            /* FSGLMUL */
+        [0x28] = { K_DYADIC, 0, 0 },            /* FSUB */
+        [0x30] = { K_SINCOS, 0, 2 }, [0x31] = { K_SINCOS, 0, 2 },
+        [0x32] = { K_SINCOS, 0, 2 }, [0x33] = { K_SINCOS, 0, 2 },
+        [0x34] = { K_SINCOS, 0, 2 }, [0x35] = { K_SINCOS, 0, 2 },
+        [0x36] = { K_SINCOS, 0, 2 }, [0x37] = { K_SINCOS, 0, 2 },
+        [0x38] = { K_CMP, 0, 0 },
+        [0x3A] = { K_TST, 0, 0 },
     };
-    opinfo r = { K_NONE, 0, 0 };
-    if (m >= 0x30 && m <= 0x37) {
-        r.kind = K_SINCOS;
-        r.soft040 = 2;
-        return r;
+    if (m >= 0x40) {
+        opinfo none = { K_NONE, 0, 0 };
+        return none;
     }
-    for (size_t i = 0; i < sizeof t / sizeof *t; i++)
-        if (t[i].mode == m) {
-            r.kind = t[i].kind;
-            r.func = t[i].func;
-            r.soft040 = t[i].soft;
-        }
-    return r;
+    return t[m];
 }
 
 /* The 68040's single and double precision forms: the opmode they round
@@ -362,6 +358,10 @@ static fpx dyadic(relevo_cpu *c, fpx_env *e, unsigned m, fpx d, fpx s)
     }
 }
 
+static void arith_result(relevo_cpu *c, unsigned base, unsigned prec,
+                         opinfo info, unsigned m, unsigned dst, fpx src,
+                         unsigned flags);
+
 /* Opclasses 000 (FPm to FPn) and 010 (<ea> to FPn, FMOVECR). */
 static void op_arith(relevo_cpu *c, uint16_t op, uint16_t cmd)
 {
@@ -415,6 +415,15 @@ static void op_arith(relevo_cpu *c, uint16_t op, uint16_t cmd)
         src = c->r.fp[spec];
     }
 
+    arith_result(c, base, prec, info, m, dst, src, flags);
+}
+
+/* The rest of an arithmetic instruction, once the source is known:
+ * opmode `m`, its base form and precision (the 68040's FSxxx/FDxxx). */
+static void arith_result(relevo_cpu *c, unsigned base, unsigned prec,
+                         opinfo info, unsigned m, unsigned dst, fpx src,
+                         unsigned flags)
+{
     fpx_env e = fpu_env(c);
     if (prec)
         e.prec = prec;
@@ -459,6 +468,9 @@ static void op_arith(relevo_cpu *c, uint16_t op, uint16_t cmd)
     }
 }
 
+static bool fmove_out_words(relevo_cpu *c, unsigned fmt, unsigned cmd, fpx v,
+                            uint32_t w[3]);
+
 /* Opclass 011: FMOVE FPm,<ea>. */
 static void op_fmove_out(relevo_cpu *c, uint16_t op, uint16_t cmd)
 {
@@ -476,9 +488,23 @@ static void op_fmove_out(relevo_cpu *c, uint16_t op, uint16_t cmd)
     if (mode != 0)
         ea_decode(c, &ea, mode, reg, size);
 
-    fpx_env e = fpu_env(c);
-    fpx v = c->r.fp[src];
     uint32_t w[3] = { 0, 0, 0 };
+    if (!fmove_out_words(c, fmt, cmd, c->r.fp[src], w))
+        return;
+    if (mode == 0) {
+        set_dreg(c, reg, w[0], size);
+        return;
+    }
+    write_mem(c, ea.addr, size, w);
+    ea_commit(c, &ea);
+}
+
+/* FMOVE FPm,<ea>: the value in format `fmt` into w[]; the status. Returns
+ * whether the destination may be written. */
+static bool fmove_out_words(relevo_cpu *c, unsigned fmt, unsigned cmd, fpx v,
+                            uint32_t w[3])
+{
+    fpx_env e = fpu_env(c);
     switch (fmt) {
     case F_L: w[0] = (uint32_t)fpx_to_int(&e, v, 4); break;
     case F_W: w[0] = (uint32_t)fpx_to_int(&e, v, 2) & 0xFFFF; break;
@@ -507,14 +533,58 @@ static void op_fmove_out(relevo_cpu *c, uint16_t op, uint16_t cmd)
         break;
     }
     }
-    if (!fpu_status(c, e.flags))
-        return;
-    if (mode == 0) {
-        set_dreg(c, reg, w[0], size);
-        return;
+    return fpu_status(c, e.flags);
+}
+
+/* ---- For the JIT ------------------------------------------------------- */
+
+uint32_t fpu_jit_op(relevo_cpu *c, uint32_t pc, uint32_t cmd_ea,
+                    uint32_t value)
+{
+    unsigned cmd = cmd_ea & 0xFFFF, mode = (cmd_ea >> 19) & 7;
+    unsigned spec = (cmd >> 10) & 7, size = fmt_size[spec];
+    c->fpu_null = false;
+    c->r.fpiar = pc;
+    if (cmd >> 13 == 3) {                   /* FMOVE FPm,<ea> */
+        uint32_t w[3] = { 0, 0, 0 };
+        fmove_out_words(c, spec, cmd, c->r.fp[(cmd >> 7) & 7], w);
+        if (mode == 0)
+            return w[0];
+        if (size == 1)
+            mem_write8(c, value, w[0]);
+        else if (size == 2)
+            mem_write16(c, value, w[0]);
+        else
+            for (unsigned i = 0; i < size / 4; i++)
+                mem_write32(c, value + 4 * i, w[i]);
+        return 0;
     }
-    write_mem(c, ea.addr, size, w);
-    ea_commit(c, &ea);
+    unsigned m = cmd & 0x7F, base = m, prec = 0, flags = 0;
+    if (m >= 0x40)
+        prec = sd_form(m, &base);
+    fpx src;
+    if (cmd >> 13 == 0) {
+        src = c->r.fp[spec];
+    } else {
+        uint32_t w[3] = { 0, 0, 0 };
+        if (mode == 0) {
+            w[0] = value & sz_mask(size);
+        } else {
+            if (mode == 7 && (cmd_ea >> 16 & 7) == 4)
+                value = pc + 4;             /* #imm, after the command */
+            if (size == 1 && !(mode == 7 && (cmd_ea >> 16 & 7) == 4))
+                w[0] = mem_read8(c, value);
+            else if (size <= 2)
+                w[0] = mem_read16(c, value) & sz_mask(size);
+            else
+                for (unsigned i = 0; i < size / 4; i++)
+                    w[i] = mem_read32(c, value + 4 * i);
+        }
+        src = convert_in(c, spec, w, &flags);
+    }
+    arith_result(c, base, prec, opmode_info(base), m, (cmd >> 7) & 7, src,
+                 flags);
+    return 0;
 }
 
 /* ---- FMOVEM -------------------------------------------------------------- */
@@ -714,6 +784,14 @@ static bool fp_cond(relevo_cpu *c, unsigned pred, bool *taken)
     case 0xE: return !z;                            /* NE, SNE */
     default:  return true;                          /* T, ST */
     }
+}
+
+bool fpu_jit_branch(relevo_cpu *c, uint32_t pc, unsigned pred)
+{
+    bool taken;
+    c->fpu_null = false;
+    c->r.fpiar = pc;
+    return fp_cond(c, pred, &taken);
 }
 
 /* FBcc (F280 + predicate: 16-bit displacement, F2C0: 32-bit). */

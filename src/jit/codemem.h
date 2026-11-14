@@ -4,8 +4,9 @@
  * once. On Linux the same memory is mapped twice, once read-write (where
  * the translator writes) and once read-execute (what runs), through a
  * memfd; if that is not possible, one mapping switches between RW and RX
- * with mprotect() around each write. Other systems need their own
- * implementation of these four functions (codemem.c).
+ * with mprotect() around each write. Windows does the same with a section
+ * mapped twice, or VirtualAlloc() and VirtualProtect(). Other systems need
+ * their own implementation of these four functions (codemem.c).
  */
 #ifndef RELEVO_JIT_CODEMEM_H
 #define RELEVO_JIT_CODEMEM_H
@@ -19,7 +20,7 @@ typedef struct codemem {
     uint8_t *rx;        /* where the same bytes run */
     size_t size;
     bool dual;          /* two mappings; else mprotect() toggling */
-    int fd;
+    int fd;             /* Linux: the memfd */
 } codemem;
 
 bool codemem_create(codemem *m, size_t size);

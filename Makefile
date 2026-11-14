@@ -88,6 +88,7 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/jitdiff -m 68000 -n 20000 -k 12
 	$(BUILD)/jitdiff -m 68020 -n 20000 -k 12
 	$(BUILD)/jitdiff -m 68000 -n 5000 -k 12 -x
+	$(BUILD)/jitdiff -m 68020 -n 5000 -k 16 -e
 	$(BUILD)/jitdiff -m 68040 -n 5000 -k 64
 	@if [ -f $(SST_DATA)/NOP.json ]; then \
 	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
@@ -97,12 +98,14 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
 	fi
 
-# Many more random cases, each model, both ways of swapping bytes.
+# Many more random cases, each model, both ways of swapping bytes and of
+# keeping the condition codes.
 jitdiff: $(BUILD)/jitdiff
-	for m in 68000 68010 68020 68040; do \
+	for m in 68000 68010 68020 68030 68040; do \
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 1 || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 16 || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -x || exit 1; \
+	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -e || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 64 || exit 1; \
 	done
 

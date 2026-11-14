@@ -250,9 +250,27 @@ static bool dec_line0(reader *r, jit_insn *in, uint16_t op)
 {
     static const int8_t alu[8] = { JA_OR, JA_AND, JA_SUB, JA_ADD, -1, JA_EOR,
                                    JA_CMP, -1 };
+    if ((op & 0x0138) == 0x0108) {
+        /* MOVEP: 0000 ddd 1 ds 001 aaa, a displacement word */
+        in->kind = JK_MOVEP;
+        in->sub = (op & 0x0080) != 0;
+        in->size = (op & 0x0040) ? 4 : 2;
+        set_dreg_ea(&in->src, (op >> 9) & 7);
+        return dec_ea(r, &in->dst, 5, op & 7, 1);
+    }
     if ((op & 0x0100) || (op & 0x0F00) == 0x0800)
         return dec_bit(r, in, op);
     unsigned size = size_of(op);
+    if (size == 0 && (op & 0x0800) && ((op >> 9) & 3) != 0
+        && r->c->model >= RELEVO_68020) {
+        /* CAS Dc,Du,<ea>: 0000 1ss 011 <ea>, ss 01 B 10 W 11 L */
+        static const uint8_t sizes[4] = { 0, 1, 2, 4 };
+        in->kind = JK_CAS;
+        in->size = sizes[(op >> 9) & 3];
+        in->ext = (uint16_t)rd16(r);
+        return dec_ea_class(r, &in->dst, (op >> 3) & 7, op & 7, in->size,
+                            EA_MEM_ALT);
+    }
     int a = alu[(op >> 9) & 7];
     if (size == 0 || a < 0)
         return false;
@@ -363,6 +381,26 @@ static bool dec_line4(reader *r, jit_insn *in, uint16_t op)
     }
     if ((op & 0xFFF8) == 0x4800)        /* NBCD Dn */
         return call_handler(in, (uint16_t)(1u << reg));
+    if ((op & 0xFFC0) == 0x4800) {      /* NBCD <ea>, checked first */
+        if (!dec_ea_class(r, &in->dst, mode, reg, 1, EA_DATA_ALT))
+            return false;
+        call_handler(in, 0);
+        in->sub = 3;
+        in->size = 1;
+        in->write = true;
+        return true;
+    }
+    if ((op & 0xFFC0) == 0x4AC0) {      /* TAS */
+        in->kind = JK_TAS;
+        in->size = 1;
+        return dec_ea_class(r, &in->dst, mode, reg, 1, EA_DATA_ALT);
+    }
+    if ((op & 0xF1C0) == 0x4180 || ((op & 0xF1C0) == 0x4100 && m020)) {
+        in->kind = JK_CHK;          /* CHK.W, CHK.L */
+        in->size = (op & 0x0080) ? 2 : 4;
+        set_dreg_ea(&in->dst, (op >> 9) & 7);
+        return dec_ea_class(r, &in->src, mode, reg, in->size, EA_DATA);
+    }
     if ((op & 0xF900) == 0x4000 && size != 0) {
         /* NEGX 40, CLR 42, NEG 44, NOT 46 */
         unsigned k = (op >> 9) & 3;
@@ -529,6 +567,14 @@ static bool dec_alu_line(reader *r, jit_insn *in, uint16_t op)
             return dec_xy(in, op, line);
         if ((line == 0x8 || line == 0xC) && opmode == 4 && mode == 0)
             return call_handler(in, (uint16_t)(1u << dn));  /* SBCD ABCD */
+        if ((line == 0x8 || line == 0xC) && opmode == 4) {
+            /* SBCD ABCD -(Ay),-(Ax): the bytes are checked first */
+            call_handler(in, (uint16_t)(1u << JR_A(dn) | 1u << JR_A(reg)));
+            in->sub = 2;
+            set_areg_ea(&in->src, reg);
+            set_areg_ea(&in->dst, dn);
+            return true;
+        }
         if (line == 0x8 && (opmode == 5 || opmode == 6) && mode == 0) {
             rd16(r);                                         /* PACK UNPK */
             return call_handler(in, (uint16_t)(1u << dn));
@@ -606,6 +652,94 @@ static bool dec_lineE(reader *r, jit_insn *in, uint16_t op)
     return true;
 }
 
+/* Line F, coprocessor 1: the FPU instructions translated as calls of
+ * fpu_jit_op() (JK_FPU), with their memory operand checked and addressed
+ * first: FMOVE in and out (L S X W D B), the arithmetic most code uses
+ * (FADD FSUB FMUL FDIV FSQRT FABS FNEG FCMP FTST, and the 68040's single
+ * and double precision forms of them); and FBcc, by fpu_jit_branch().
+ * Nothing that the FPU of this model leaves to line F. `in->size`: the
+ * bytes of the operand; `in->ext`: the command word. */
+static bool fpu_opmode(const relevo_cpu *c, unsigned m)
+{
+    static const uint8_t common[] = { 0x00, 0x04, 0x18, 0x1A, 0x20, 0x22,
+                                      0x23, 0x28, 0x38, 0x3A };
+    static const uint8_t sd[] = { 0x40, 0x41, 0x44, 0x45, 0x58, 0x5A, 0x5C,
+                                  0x5E, 0x60, 0x62, 0x63, 0x64, 0x66, 0x67,
+                                  0x68, 0x6C };
+    for (size_t i = 0; i < sizeof common; i++)
+        if (common[i] == m)
+            return true;
+    if (c->fpu == RELEVO_FPU_INTERNAL)
+        for (size_t i = 0; i < sizeof sd; i++)
+            if (sd[i] == m)
+                return true;
+    return false;
+}
+
+static bool dec_lineF(reader *r, jit_insn *in, uint16_t op)
+{
+    static const uint8_t fmt_size[8] = { 4, 4, 12, 12, 2, 8, 1, 12 };
+    relevo_cpu *c = r->c;
+    unsigned mode = (op >> 3) & 7, reg = op & 7;
+    if (c->fpu == RELEVO_FPU_NONE)
+        return false;
+    if ((op & 0xFF80) == 0xF280) {          /* FBcc */
+        if (op & 0x20)
+            return false;
+        uint32_t base = in->pc + 2;
+        in->target = base + ((op & 0x40) ? rd32(r) : sx16(rd16(r)));
+        in->kind = JK_FBCC;
+        in->cc = (uint8_t)(op & 0x3F);
+        return (in->target & 1) == 0;
+    }
+    if ((op & 0xFFC0) != 0xF200)
+        return false;
+    unsigned cmd = rd16(r);
+    unsigned opclass = cmd >> 13, spec = (cmd >> 10) & 7;
+    in->kind = JK_FPU;
+    in->ext = (uint16_t)cmd;
+    switch (opclass) {
+    case 0:                                 /* FPm to FPn */
+        return (op & 0x3F) == 0 && fpu_opmode(c, cmd & 0x7F);
+    case 2:                                 /* <ea> to FPn */
+    case 3:                                 /* FPn to <ea> */
+        break;
+    default:
+        return false;
+    }
+    if (spec == 3 || spec == 7)             /* packed, FMOVECR */
+        return false;
+    if (opclass == 2 && !fpu_opmode(c, cmd & 0x7F))
+        return false;
+    if (opclass == 3 && (cmd & 0x7F) != 0)  /* the k-factor of packed */
+        return false;
+    unsigned size = fmt_size[spec];
+    bool shortf = size <= 4 && spec != 3;
+    in->size = (uint8_t)size;
+    if (mode == 0) {                        /* Dn: L S W B */
+        if (!shortf)
+            return false;
+        set_dreg_ea(&in->dst, reg);
+        return true;
+    }
+    if (mode == 1 || (mode == 7 && reg > (opclass == 2 ? 4u : 1u)))
+        return false;
+    if (mode == 7 && reg == 4) {            /* #imm: a byte in a word */
+        for (unsigned i = 0; i < (size < 2 ? 2 : size); i += 2)
+            rd16(r);
+        set_imm_ea(&in->dst, 0);
+        return true;
+    }
+    if (!dec_ea(r, &in->dst, mode, reg, size == 1 ? 1 : size == 2 ? 2 : 4))
+        return false;
+    /* (An)+ and -(An) step by the operand's size (dec_ea took 1, 2, 4;
+     * a byte moves A7 by 2) */
+    if (in->dst.step != 0 && size > 4)
+        in->dst.step = (int8_t)(in->dst.step < 0 ? -(int)size : (int)size);
+    in->write = opclass == 3;
+    return true;
+}
+
 /* ---- Checks ----------------------------------------------------------- */
 
 /* A memory access at a constant address, checked now: it must be a plain
@@ -623,6 +757,19 @@ static bool const_access_ok(relevo_cpu *c, uint32_t addr, unsigned size,
               : !page_direct_read(kind))
         return false;
     return in_page(a, size);
+}
+
+/* A constant access that the interpreter can do without a fault, through
+ * the host's functions or a dropped ROM write. */
+static bool const_access_host(relevo_cpu *c, uint32_t addr, unsigned size)
+{
+    if (size > 1 && (addr & 1) && c->align_check)
+        return false;
+    for (unsigned i = 0; i < size; i++)
+        if (c->pages[((addr + i) & c->addr_mask) >> RELEVO_PAGE_SHIFT]
+            == RELEVO_PAGE_NONE)
+            return false;
+    return true;
 }
 
 static uint16_t ea_regs(const jit_ea *e)
@@ -655,7 +802,7 @@ static uint16_t ea_steps(const jit_ea *e)
 
 /* An operand in memory that is read and/or written: a constant address is
  * checked now, any other is checked by the code (and may bail). */
-static bool mem_operand(relevo_cpu *c, jit_insn *in, const jit_ea *e,
+static bool mem_operand(relevo_cpu *c, jit_insn *in, jit_ea *e,
                         unsigned size, bool write)
 {
     if (e->kind != JEA_MEM)
@@ -665,7 +812,13 @@ static bool mem_operand(relevo_cpu *c, jit_insn *in, const jit_ea *e,
         /* A write may still hit translated code. */
         if (write)
             in->may_bail = true;
-        return const_access_ok(c, e->disp, size, write);
+        if (const_access_ok(c, e->disp, size, write))
+            return true;
+        if (!const_access_host(c, e->disp, size))
+            return false;
+        e->host = 1;
+        in->may_bail = true;
+        return true;
     }
     in->may_bail = true;
     return true;
@@ -733,6 +886,9 @@ bool jit_decode(relevo_cpu *c, uint32_t pc, jit_insn *in, bool *rom)
         break;
     case 0xE:
         ok = dec_lineE(&r, in, op);
+        break;
+    case 0xF:
+        ok = dec_lineF(&r, in, op);
         break;
     default:
         ok = false;
@@ -886,7 +1042,7 @@ bool jit_decode(relevo_cpu *c, uint32_t pc, jit_insn *in, bool *rom)
         break;
     case JK_MOVEM: {
         unsigned n = popcount16(in->mask);
-        const jit_ea *e = in->sub ? &in->src : &in->dst;
+        jit_ea *e = in->sub ? &in->src : &in->dst;
         if (in->sub)
             w |= in->mask;
         if ((e->kind == JEA_MEM && e->step == 0)
@@ -903,12 +1059,48 @@ bool jit_decode(relevo_cpu *c, uint32_t pc, jit_insn *in, bool *rom)
         in->may_bail = true;
         in->cycles = (uint16_t)(in->cycles + 12);
         break;
+    case JK_TAS:
+        in->flags_def = JF_NZVC;
+        w |= ea_reg_of(&in->dst);
+        ok = mem_operand(c, in, &in->dst, 1, true);
+        break;
+    case JK_CHK:
+        /* 68020 on: no flag changes without the trap (see op_chk) */
+        in->flags_def = c->model >= RELEVO_68020 ? 0 : JF_NZVC;
+        in->may_bail = true;
+        ok = mem_operand(c, in, &in->src, size, false);
+        in->cycles = (uint16_t)(in->cycles + 6);
+        break;
+    case JK_CAS: {
+        uint16_t m = (uint16_t)(1u << (in->ext & 7) | 1u << ((in->ext >> 6) & 7));
+        in->regs |= m;
+        w |= (uint16_t)(1u << (in->ext & 7));
+        in->flags_def = JF_NZVC;
+        ok = mem_operand(c, in, &in->dst, size, true);
+        in->cycles = (uint16_t)(in->cycles + 8);
+        break;
+    }
+    case JK_MOVEP:
+        if (!in->sub)
+            w |= ea_reg_of(&in->src);
+        in->may_bail = true;
+        in->cycles = (uint16_t)(in->cycles + 4 * size);
+        break;
     case JK_CALL:
         in->flags_use = JF_ALL;
         in->regs = 0;
         w = in->wregs;
         in->cycles = 0;     /* the handler counts them */
-        if (in->sub == 1) {
+        if (in->sub == 2) {
+            in->regs = w;
+            in->may_bail = true;
+        } else if (in->sub == 3) {
+            in->regs = ea_regs(&in->dst);
+            w = ea_steps(&in->dst);
+            if (jea_mem_const(&in->dst))
+                ok = const_access_ok(c, in->dst.disp, 1, true);
+            in->may_bail = true;
+        } else if (in->sub == 1) {
             /* the address and the offset register, for the check */
             in->regs = ea_regs(&in->dst);
             if (in->ext & 0x0800)
@@ -919,6 +1111,18 @@ bool jit_decode(relevo_cpu *c, uint32_t pc, jit_insn *in, bool *rom)
                                         + (((unsigned)in->ext >> 6 & 31) >> 3),
                                      5, in->write);
         }
+        break;
+    case JK_FPU:
+        in->may_bail = true;        /* an FPU exception to take */
+        if (in->dst.kind == JEA_DREG && (in->ext >> 13) == 3)
+            w |= ea_reg_of(&in->dst);
+        ok = mem_operand(c, in, &in->dst, in->size, in->write);
+        in->cycles = (uint16_t)(in->cycles + 40);
+        break;
+    case JK_FBCC:
+        in->may_bail = true;        /* an FPU exception to take */
+        in->ends_block = true;
+        in->cycles = (uint16_t)(in->cycles + 6);
         break;
     case JK_BCC:
         in->flags_use = cc_flags(in->cc);

@@ -39,9 +39,19 @@ enum jit_kind {
     JK_MOVEM,       /* mask: the register list; sub: 1 memory to registers */
     JK_LINK,        /* LINK An (dst),#imm (src) */
     JK_UNLK,
+    JK_TAS,         /* TAS dst (a byte) */
+    JK_CHK,         /* CHK src,Dn (dst), .W or .L */
+    JK_CAS,         /* CAS Dc,Du,dst (ext: the extension word) */
+    JK_MOVEP,       /* MOVEP between Dn and (d16,Ay); sub 1: to memory */
     JK_CALL,        /* the interpreter's handler, called from the block;
-                     * sub 1: a bit field in memory (dst, ext), checked
-                     * first (5 bytes, `write`) */
+                     * memory it touches is checked first: sub 1, a bit
+                     * field (dst, ext; 5 bytes, `write`); sub 2, ABCD or
+                     * SBCD -(Ay),-(Ax) (src, dst); sub 3, NBCD in memory
+                     * (dst) */
+    JK_FPU,         /* an FPU instruction, by fpu_jit_op() (see decode.c):
+                     * ext the command word, dst the operand, size its
+                     * bytes */
+    JK_FBCC,        /* FBcc (cc: the predicate) */
     JK_BCC,         /* Bcc and BRA (cc 0) */
     JK_BSR,
     JK_DBCC,
@@ -72,6 +82,9 @@ typedef struct jit_ea {
     /* MEM, 68020 memory indirect: 0 none, 1 the index (if any) is added
      * before the indirection, 2 after it. */
     uint8_t ind;
+    /* MEM at a constant address that is not plain but cannot fault (a host
+     * page, a ROM write): the code always calls the interpreter. */
+    uint8_t host;
     /* MEM: displacement; the whole address if there is neither base nor
      * index. IMM: the value. */
     uint32_t disp;
