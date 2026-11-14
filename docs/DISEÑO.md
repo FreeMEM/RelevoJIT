@@ -60,7 +60,9 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
 ## El JIT x86-64
 
 - **Bloques.** Desde un PC hasta un salto, una excepción posible o un tope de instrucciones. Caché de traducciones
-  por dirección 68k, con un resumen del código para detectar cambios, como Emu68.
+  por dirección 68k. Las páginas con código traducido van marcadas: una escritura que toca ese código quita sus
+  traducciones (R6b; R6a miraba un resumen del código al entrar, como Emu68). Si el anfitrión escribe la memoria
+  directamente, llama a `relevo_invalidate`.
 - **Registros.** Los del 68k viven en una estructura en memoria. Un registro fijo de x86 apunta a ella y otro a la
   base de la memoria 68k. Dentro de un bloque, un asignador simple carga en registros de x86 los del 68k que se usan y
   guarda los cambiados al salir.
@@ -69,8 +71,10 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
   el anfitrión garantiza que esa zona da un fallo de página (DashOS lo hará, S18).
 - **Banderas.** N, Z, V y C son SF, ZF, OF y CF de x86 (en la resta, CF es el préstamo, como en el 68k). Se guardan
   solo cuando alguien las lee: análisis hacia atrás dentro del bloque, como Emu68. X va aparte.
-- **Salida del bloque.** Encadenado directo al siguiente bloque cuando se conoce el destino; si no, vuelta al bucle,
-  que mira interrupciones y busca en la caché.
+- **Salida del bloque.** Encadenado directo al siguiente bloque cuando se conoce el destino (el salto se parchea la
+  primera vez); los saltos indirectos (`RTS`, `JMP (An)`) miran una caché pequeña de destinos; si no, vuelta al
+  bucle, que mira interrupciones y busca en la caché. Cada bloque mira al entrar el presupuesto y si hay que atender
+  algo.
 - **Comprobación.** Cada instrucción se prueba en el intérprete y en el JIT con los mismos estados de entrada; tienen
   que salir iguales.
 

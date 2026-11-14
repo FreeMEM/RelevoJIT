@@ -4,12 +4,21 @@
  *
  * The dispatcher (jit.c) runs translated blocks and falls back to the
  * interpreter, one instruction at a time, for what it does not translate.
- * Translated blocks never call C and never fault: before the first side
- * effect of an instruction they check every memory access, and if one is
- * not a plain access to RAM (or ROM, for reads) they leave the block with
- * the state from before that instruction, which the interpreter then runs.
- * So exceptions, host pages and the 68000's fault frames all come from the
- * interpreter, exactly as without the JIT.
+ * Translated blocks never fault: before the first side effect of an
+ * instruction they check every memory access, and if one is not a plain
+ * access to RAM (or ROM, for reads) they leave the block with the state
+ * from before that instruction, which the interpreter then runs. So
+ * exceptions, host pages and the 68000's fault frames all come from the
+ * interpreter, exactly as without the JIT. Blocks jump straight to each
+ * other ("chaining") and only come back to the dispatcher when they must.
+ *
+ * Translated code is not checked when it runs: writes into it are caught
+ * instead. The pages with translated code are marked (PAGE_RAM_CODE in the
+ * page table, JMAP_CODE in the JIT's finer map); a write there by a block
+ * leaves for the interpreter if it touches translated code, and a write by
+ * the interpreter or the host (relevo_write()) drops the translations it
+ * touches (jit_code_written()). Whoever writes the memory block directly
+ * calls relevo_invalidate().
  */
 #ifndef RELEVO_JIT_H
 #define RELEVO_JIT_H
@@ -35,6 +44,9 @@ relevo_status jit_run_loop(relevo_cpu *cpu);
 
 /* Drops the translations of code in [address, address + size). */
 void jit_invalidate(relevo_cpu *cpu, uint32_t address, uint32_t size);
+/* memory.c: `size` bytes at the masked address `addr` of a PAGE_RAM_CODE
+ * page were written. */
+void jit_code_written(relevo_cpu *cpu, uint32_t addr, unsigned size);
 /* Drops every translation (the page map changed). */
 void jit_flush(relevo_cpu *cpu);
 
@@ -47,6 +59,8 @@ typedef struct jit_stats {
     uint64_t bails;         /* left a block for the interpreter */
     uint64_t interp;        /* instructions run by the interpreter */
     uint64_t flushes;       /* whole cache flushes */
+    uint64_t links;         /* jumps chained */
+    uint64_t dropped;       /* blocks dropped (code changed, invalidate) */
 } jit_stats;
 
 void jit_get_stats(const relevo_cpu *cpu, jit_stats *out);

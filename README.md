@@ -58,7 +58,9 @@ line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_
 
 `cfg.engine = RELEVO_ENGINE_JIT` selects the JIT (x86-64 hosts; `relevo_create()` returns NULL elsewhere). It gives
 the same results as the interpreter: what it does not translate, and every access that is not plain RAM (or ROM, to
-read), runs in the interpreter.
+read), runs in the interpreter. Writes by the 68k code (or through `relevo_write()`) into code it has translated are
+caught; when the host changes code by writing the memory block directly, it calls `relevo_invalidate()` for that
+range (as a 68040 program flushes its caches).
 
 With `cfg.fpu` the 68020 and 68030 get a 68881 or 68882 and the 68040 and 68060 their own FPU, in extended
 precision computed in software (`src/fpx*.c`); link with `-lm`, which the transcendental functions use.

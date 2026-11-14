@@ -136,9 +136,15 @@ uint32_t mem_read_slow(relevo_cpu *cpu, uint32_t addr, unsigned size);
 void mem_write_slow(relevo_cpu *cpu, uint32_t addr, uint32_t value,
                     unsigned size);
 
+/* An internal page kind: RAM holding code the JIT has translated. Reads are
+ * direct; writes take the slow path, which drops the translations they
+ * touch (jit_code_written()). jit_flush() turns these pages back into RAM. */
+#define PAGE_RAM_CODE 4
+
 static inline bool page_direct_read(uint8_t kind)
 {
-    return kind == RELEVO_PAGE_RAM || kind == RELEVO_PAGE_ROM;
+    return kind == RELEVO_PAGE_RAM || kind == RELEVO_PAGE_ROM
+        || kind == PAGE_RAM_CODE;
 }
 
 static inline uint32_t mem_read8(relevo_cpu *c, uint32_t addr)

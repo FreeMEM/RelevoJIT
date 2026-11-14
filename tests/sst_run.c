@@ -40,10 +40,13 @@ void sst_env_free(sst_env *env)
 
 static void clear_state_memory(sst_env *env, const sst_state *s)
 {
-    for (size_t i = 0; i < s->ram_count; i++)
+    for (size_t i = 0; i < s->ram_count; i++) {
         env->mem[s->ram[i].address & MASK] = 0;
+        relevo_invalidate(env->cpu, s->ram[i].address & MASK, 1);
+    }
     for (uint32_t i = 0; i < 4; i++)
         env->mem[(s->reg[SST_PC] - 4 + i) & MASK] = 0;
+    relevo_invalidate(env->cpu, (s->reg[SST_PC] - 4) & MASK, 4);
 }
 
 /* Clears what the CPU may have pushed between the initial and final stack
@@ -55,13 +58,16 @@ static void clear_stack(sst_env *env, uint32_t from, uint32_t to)
     uint32_t lo = from < to ? from : to, hi = from < to ? to : from;
     if (hi - lo > 64)
         return;
-    for (uint32_t a = lo - 4; a != hi + 4; a++)
+    for (uint32_t a = lo - 4; a != hi + 4; a++) {
         env->mem[a & MASK] = 0;
+        relevo_invalidate(env->cpu, a & MASK, 1);
+    }
 }
 
 void sst_env_clear(sst_env *env)
 {
     memset(env->mem, 0, MEM_SIZE);
+    relevo_invalidate(env->cpu, 0, MEM_SIZE);
 }
 
 typedef struct why_buf {
@@ -97,6 +103,12 @@ bool sst_run_one(sst_env *env, const sst_test *t, char *why, size_t why_size)
         env->mem[(start + 2 * i) & MASK] = (uint8_t)(in->prefetch[i] >> 8);
         env->mem[(start + 2 * i + 1) & MASK] = (uint8_t)in->prefetch[i];
     }
+
+    /* Written behind the CPU's back: drop what the JIT made of it (the
+     * clearing after each test does the same). */
+    for (size_t i = 0; i < in->ram_count; i++)
+        relevo_invalidate(cpu, in->ram[i].address & MASK, 1);
+    relevo_invalidate(cpu, start & MASK, 4);
 
     relevo_reset(cpu);
     relevo_regs *r = relevo_get_regs(cpu);

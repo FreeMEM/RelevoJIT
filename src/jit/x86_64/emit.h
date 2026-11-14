@@ -425,4 +425,159 @@ static inline void x_cmov(xbuf *b, int cc, int dst, int src)  /* 32-bit */
     x_rr(b, 4, o, 2, dst, src, false);
 }
 
+/* JMP [m] */
+static inline void x_jmp_m(xbuf *b, xmem m)
+{
+    uint8_t o = 0xFF;
+    x_rm(b, 4, &o, 1, 4, m, false);
+}
+
+/* CALL r64 */
+static inline void x_call_r(xbuf *b, int r)
+{
+    uint8_t o = 0xFF;
+    x_rr(b, 4, &o, 1, 2, r, false);
+}
+
+/* CALL rel32 with a target to fill in later. */
+static inline size_t x_call32(xbuf *b)
+{
+    x_b(b, 0xE8);
+    size_t at = b->pos;
+    x_d(b, 0);
+    return at;
+}
+
+/* MOV r64, imm64 */
+static inline void x_mov_ri64(xbuf *b, int dst, uint64_t imm)
+{
+    x_prefix(b, 8, -1, -1, dst, false);
+    x_b(b, (uint8_t)(0xB8 + (dst & 7)));
+    x_d(b, (uint32_t)imm);
+    x_d(b, (uint32_t)(imm >> 32));
+}
+
+/* PUSH imm32 (sign-extended) */
+static inline void x_push_imm(xbuf *b, int32_t v)
+{
+    x_b(b, 0x68);
+    x_d(b, (uint32_t)v);
+}
+
+/* LEA r64, [m] (64-bit result: for RSP) */
+static inline void x_lea64(xbuf *b, int dst, xmem m)
+{
+    uint8_t o = 0x8D;
+    x_rm(b, 8, &o, 1, dst, m, false);
+}
+
+/* ADD r64, [m] */
+static inline void x_add_rm64(xbuf *b, int dst, xmem m)
+{
+    uint8_t o = 0x03;
+    x_rm(b, 8, &o, 1, dst, m, false);
+}
+
+/* MOV r64, [m] / MOV [m], r64 */
+static inline void x_load64(xbuf *b, int dst, xmem m)
+{
+    uint8_t o = 0x8B;
+    x_rm(b, 8, &o, 1, dst, m, false);
+}
+
+/* TEST byte [m], imm8 */
+static inline void x_test_mi8(xbuf *b, xmem m, uint8_t imm)
+{
+    uint8_t o = 0xF6;
+    x_rm(b, 1, &o, 1, 0, m, false);
+    x_b(b, imm);
+}
+
+/* Shifts and rotates of r/m by an immediate or CL: ROL 0, ROR 1, RCL 2,
+ * RCR 3, SHL 4, SHR 5, SAR 7. */
+enum { XS_ROL = 0, XS_ROR = 1, XS_RCL = 2, XS_RCR = 3, XS_SHL = 4,
+       XS_SHR = 5, XS_SAR = 7 };
+
+static inline void x_shift_r(xbuf *b, int op, int size, int r, int n)
+{
+    uint8_t o = size == 1 ? 0xC0 : 0xC1;
+    x_rr(b, size, &o, 1, op, r, size == 1);
+    x_b(b, (uint8_t)n);
+}
+
+static inline void x_shift_cl(xbuf *b, int op, int size, int r)
+{
+    uint8_t o = size == 1 ? 0xD2 : 0xD3;
+    x_rr(b, size, &o, 1, op, r, size == 1);
+}
+
+/* BT 4, BTS 5, BTR 6, BTC 7 r32, imm8 / r32, r32 */
+enum { XB_BT = 4, XB_BTS = 5, XB_BTR = 6, XB_BTC = 7 };
+
+static inline void x_btx_ri(xbuf *b, int op, int r, int bit)
+{
+    static const uint8_t o[2] = { 0x0F, 0xBA };
+    x_rr(b, 4, o, 2, op, r, false);
+    x_b(b, (uint8_t)bit);
+}
+
+static inline void x_btx_rr(xbuf *b, int op, int base, int bit)
+{
+    static const uint8_t codes[4] = { 0xA3, 0xAB, 0xB3, 0xBB };
+    uint8_t o[2] = { 0x0F, codes[op - XB_BT] };
+    x_rr(b, 4, o, 2, bit, base, false);
+}
+
+/* SETcc r8 */
+static inline void x_setcc(xbuf *b, int cc, int r)
+{
+    uint8_t o[2] = { 0x0F, (uint8_t)(0x90 + cc) };
+    x_rr(b, 1, o, 2, 0, r, true);
+}
+
+/* NOT 2, NEG 3, MUL 4, IMUL 5, DIV 6, IDIV 7 (F6/F7 group) */
+enum { XU_NOT = 2, XU_NEG = 3, XU_DIV = 6, XU_IDIV = 7 };
+
+static inline void x_unary(xbuf *b, int op, int size, int r)
+{
+    uint8_t o = size == 1 ? 0xF6 : 0xF7;
+    x_rr(b, size, &o, 1, op, r, size == 1);
+}
+
+/* IMUL r, r/m (size 2, 4 or 8) */
+static inline void x_imul_rr(xbuf *b, int size, int dst, int src)
+{
+    static const uint8_t o[2] = { 0x0F, 0xAF };
+    x_rr(b, size, o, 2, dst, src, false);
+}
+
+/* ADC 2, SBB 3 as ALU rows */
+enum { XA_ADC = 2, XA_SBB = 3 };
+
+static inline void x_cqo(xbuf *b)
+{
+    x_b(b, 0x48);
+    x_b(b, 0x99);
+}
+
+/* XCHG r, r (32-bit) */
+static inline void x_xchg_rr(xbuf *b, int a, int c)
+{
+    uint8_t o = 0x87;
+    x_rr(b, 4, &o, 1, a, c, false);
+}
+
+/* MOVSXD r64, r32 and MOVSX r64, r8/r16 */
+static inline void x_movsxd(xbuf *b, int dst, int src)
+{
+    uint8_t o = 0x63;
+    x_rr(b, 8, &o, 1, dst, src, false);
+}
+
+static inline void x_movsx64_rr(xbuf *b, int from, int dst, int src)
+{
+    uint8_t o[2] = { 0x0F, from == 1 ? 0xBE : 0xBF };
+    x_rr(b, 8, o, 2, dst, src, from == 1);
+}
+
 #endif

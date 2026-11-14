@@ -30,14 +30,16 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   extendida en software propio (2026-11-14).
 - [ ] R5 **Banco diferencial.** Los programas de `dashos/jit-host/pruebas68k` en RelevoJIT, en Emu68
   (`qemu-aarch64_be`) y en FS-UAE con el Kickstart real; las salidas, iguales.
-- [~] R6 **JIT x86-64.** En partes:
+- [x] R6 **JIT x86-64.** En partes:
   - [x] R6a (2026-11-14): la base. Emisor x86-64, bloques y caché de traducciones, registros del 68k en memoria con asignador por
     bloque, memoria con `MOVBE` (o `BSWAP`), banderas solo cuando alguien las lee, salida al bucle con
     interrupciones. Las instrucciones que no traduce caen al intérprete (una a una, dentro del bloque o cortándolo).
     Traduce de verdad un primer grupo: `MOVE`, `MOVEQ`, `LEA`, `ADD`, `SUB`, `CMP`, `AND`, `OR`, `EOR`, `TST`, `Bcc`,
     `DBcc`, `BRA`, `BSR`, `JSR`, `RTS`. Diferencial contra el intérprete con estados al azar, y SingleStepTests y el
     banco del oráculo también en modo JIT.
-  - [ ] R6b: el resto de instrucciones enteras, encadenado de bloques, invalidación por escritura en código.
+  - [x] R6b (2026-11-14): el resto de instrucciones enteras (las raras, al intérprete o a su manejador llamado desde
+    el bloque), la palabra de extensión completa, encadenado de bloques y caché de saltos indirectos, invalidación
+    por escritura en código (páginas marcadas, sin resumen), banderas pendientes en EFLAGS y `CMP`/`TST` con `Bcc`.
 - [ ] R7 **JIT de la FPU y rendimiento.**
 
 ## Bloqueos
@@ -519,3 +521,87 @@ Ficheros comunes tocados: `src/cpu.h` (dos campos de estado de la FPU y `fpu_res
 `tests/test_fpu.c`), `tests/tests.h`, `tests/oraculo.c` (FPU en 020+), `tools/oraculo/oraculo.py` (`Case.post`, los
 programas de FPU, arranque aparte con 68882, `ORACULO_RANGE` para buscar un caso) y `README.md`.
 
+### 2026-11-14 — R6b
+
+Hecho:
+
+- Instrucciones nuevas en el JIT: desplazamientos y rotaciones (`ASx`, `LSx`, `ROx`, `ROXx`) en Dn con cuenta
+  inmediata y en memoria; `BTST`, `BCHG`, `BCLR`, `BSET`; `MULU`, `MULS`, `DIVU`, `DIVS` en .W y en .L (32 y 64
+  bits); `EXT`, `EXTB`, `SWAP`, `EXG`; `NEG`, `NEGX`, `NOT`; `ADDX`, `SUBX`; `CMPM`; `Scc`; `MOVEM`; `LINK` (.W y
+  .L), `UNLK`, `PEA`; `TST` y `CMPI` con los operandos del 020.
+- La palabra de extensión completa del 020, con la indirección en memoria. El puntero se lee y se comprueba en la
+  primera fase, como un acceso más.
+- `JK_CALL`: el bloque llama al manejador del intérprete para lo que no merece traducción y no puede dar
+  excepción: desplazamientos con la cuenta en Dn, `ABCD`, `SBCD` y `NBCD` en Dn, `PACK` y `UNPK` en Dn y los campos
+  de bits. En memoria, el campo de bits comprueba antes los 5 bytes que puede tocar. Antes guarda los registros y SR,
+  después recarga los que el manejador cambia.
+- División por cero y `DIVx.L` que desbordan: el divisor se lee en la primera fase; si es 0, el bloque sale al
+  intérprete sin hacer nada. El 64/32 con signo evita la trampa de x86 (el más negativo entre -1).
+- `MOVEM` con registros que el bloque no tiene en x86: los lee y escribe en la estructura. Así no corta el bloque.
+- Encadenado: una salida a un PC conocido acaba en un salto que primero va al despachador; este lo parchea para que
+  vaya directo al bloque destino y lo apunta en el destino. Quitar un bloque deshace sus saltos. Cada bloque mira al
+  entrar el presupuesto (le tienen que caber todas sus instrucciones) y la atención (`relevo_set_ipl`,
+  `relevo_request_stop`): el presupuesto sigue exacto y las interrupciones llegan entre bloques.
+- `RTS` y los saltos por registro buscan el destino en una caché de 4096 entradas que el despachador llena. Nunca
+  se encadena ni se guarda el PC 0 con `RELEVO_OPT_EXIT_ON_PC_ZERO`.
+- Código que cambia, sin resumen: la tabla de páginas tiene un tipo interno, `PAGE_RAM_CODE`, para la RAM con
+  código traducido; las escrituras del intérprete y de `relevo_write` en esas páginas van por el camino lento, que
+  quita los bloques que tocan (`jit_code_written`). El JIT tiene su propio mapa de páginas de 4 KB (lectura,
+  escritura, código) y, por página, la lista de bloques y una máscara de trozos de 64 bytes con código. Un bloque que
+  escribe en una página con código, o cruza 4 KB, llama a `jit_access_check` (un trampolín común que guarda los
+  registros); solo sale al intérprete si toca código de verdad. Los datos junto al código no cuestan salidas.
+- Cambia el contrato: si el anfitrión escribe la memoria directamente, llama a `relevo_invalidate` (como un programa
+  del 040 vacía las cachés). Está en `relevo.h` y en el README. `jitdiff` y `sst` lo hacen al poner cada caso.
+  `CPUSH`, `CINV` y `CACR` ya llamaban a `relevo_invalidate` desde el intérprete; ahora hay prueba.
+- Banderas: quedan pendientes en EFLAGS hasta que algo las cambiaría. `Bcc`, `DBcc` y `Scc` en Dn que van detrás
+  leen EFLAGS directamente (`CMP`/`TST`/`SUBQ` + `Bcc` es un `cmp` y un `jcc`). La conversión a CCR es más corta.
+- El contador de instrucciones lo lleva el despachador (lo que bajó el presupuesto): una escritura menos por salida.
+
+Pruebas:
+
+- `jitdiff` genera todo lo nuevo: las instrucciones de arriba, la palabra de extensión completa (también las
+  codificaciones reservadas), operandos que apuntan al propio código y que cruzan 4 KB. `make test` añade bloques de
+  hasta 64 instrucciones en el 68040; `make jitdiff`, también en cada modelo.
+- 6 pruebas unitarias nuevas (`tests/test_jit.c`): encadenado, caché indirecta, presupuesto exacto con bloques
+  encadenados (contra el intérprete), escrituras junto al código sin salidas, un bloque que cambia el código de otro
+  y `CPUSHA` tras un cambio del anfitrión.
+
+Comprobado:
+
+- `make test` (99 pruebas, el oráculo con los dos motores, `jitdiff`) con gcc 16 y clang 23, también con ASan y
+  UBSan. `make sst` y `make sst JIT=1`: 317 500 de 317 500.
+- `jitdiff`: unos 9 millones de casos (68000, 68010, 68020, 68030 y 68040; `MOVBE` y `BSWAP`; bloques de 1, 16 y
+  64 instrucciones; varias semillas), todos iguales. Con un fallo puesto a propósito (`ROL` por `ROR`) lo encuentra
+  en el cuarto caso.
+
+Velocidad (`make bench`, gcc -O2, millones de instrucciones 68k por segundo, 68020):
+
+| Programa | Intérprete | JIT R6a | JIT R6b |
+|---|---|---|---|
+| Bucle aritmético | 122 | 1963 | 2149 |
+| Copia de memoria | 118 | 894 | 997 |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 131 | 292 | 1255 |
+
+"Bytes" sube unas 4,3 veces (de 292 a 1255): ya no sale al bucle en cada rama ni en cada `RTS`.
+
+No hecho:
+
+- Accesos a páginas del anfitrión desde el bloque: siguen saliendo al intérprete. Una función del anfitrión puede
+  llamar a `relevo_invalidate` o a `relevo_map` y quitar el bloque que corre, o vaciar la memoria de código; hacerlo
+  bien pide aplazar esas invalidaciones hasta salir del bloque. No era sencillo: queda para R7.
+
+Falta (R7):
+
+- Las banderas se escriben en SR en cada salida de bloque (unas 12 instrucciones). Dejarlas en bruto para el bloque
+  siguiente, que casi siempre las vuelve a calcular, es la mejora grande que queda.
+- Desplazamientos con la cuenta en Dn traducidos de verdad (hoy, el manejador). `ABCD`/`SBCD`/`NBCD` en memoria,
+  `MOVEP`, `TAS`, `CHK`, `CHK2`, `CAS`, `MOVE` con SR, CCR y USP, `TRAP`, `RTE`, `RTR`, `RTD` y la FPU siguen en el
+  intérprete (cortan el bloque).
+- Un bloque marcador (instrucción que no se traduce) cubre 22 bytes: una escritura ahí lo quita y se vuelve a
+  decodificar. Es raro y barato.
+- `codemem` para Windows.
+
+Ficheros comunes tocados: `src/cpu.h` (`PAGE_RAM_CODE` y `page_direct_read`), `src/memory.c` (la escritura en una
+página con código avisa al JIT), `include/relevo.h` (comentario de `relevo_invalidate`), `Makefile` (dos tandas más
+de `jitdiff`), `tests/tests.h`, `tests/sst_run.c` (`relevo_invalidate` al poner cada caso), `README.md` y
+`docs/DISEÑO.md`. No se tocaron `cpu.c`, `interp.h`, `table.c` ni `exception.c`.
