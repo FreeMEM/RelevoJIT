@@ -3,3 +3,4 @@ tests/datos/
 *.o
 *.a
 .worktrees/
+__pycache__/

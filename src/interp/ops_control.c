@@ -3,7 +3,7 @@
  * Program control: the illegal/unimplemented opcodes, NOP, branches, jumps,
  * returns, TRAP, TRAPV and CHK.
  */
-#include "interp.h"
+#include "ops_020.h"
 
 void op_illegal(relevo_cpu *c, uint16_t op)
 {
@@ -166,16 +166,67 @@ static void op_rtr(relevo_cpu *c, uint16_t op)
     jump(c, target, c->insn_pc + 2);
 }
 
-/* RTE, 68000 frame (SR, PC). TODO(R3): the 68010+ frame formats. */
+/* Bytes of an exception frame of format `fmt` on model `m`, or 0 if RTE
+ * does not take that format there (a format error). MC68010 5.5,
+ * MC68020UM 6.4, MC68040UM 8.4, MC68060UM 8.5. (FS-UAE takes formats $4, $7,
+ * $8, $9, $A and $B on both the 68020 and the 68040, and not $3 on the
+ * 68040; RelevoJIT follows the manuals.) */
+static unsigned frame_bytes(relevo_model m, unsigned fmt)
+{
+    switch (fmt) {
+    case 0x0: return 8;
+    case 0x1: return m >= RELEVO_68020 && m <= RELEVO_68040 ? 8 : 0;
+    case 0x2: return m >= RELEVO_68020 ? 12 : 0;
+    case 0x3: return m >= RELEVO_68040 ? 12 : 0;
+    case 0x4: return m >= RELEVO_68040 ? 16 : 0;
+    case 0x7: return m == RELEVO_68040 ? 60 : 0;
+    case 0x8: return m == RELEVO_68010 ? 58 : 0;
+    case 0x9: return m == RELEVO_68020 || m == RELEVO_68030 ? 20 : 0;
+    case 0xA: return m == RELEVO_68020 || m == RELEVO_68030 ? 32 : 0;
+    case 0xB: return m == RELEVO_68020 || m == RELEVO_68030 ? 92 : 0;
+    default:  return 0;
+    }
+}
+
+/* RTE. On the 68000 the frame is SR and PC. From the 68010 on, the format
+ * word says how big the frame is; a format the model does not have is a
+ * format error, taken with the RTE's own address, after the first four
+ * words of the bad frame are popped (as FS-UAE, the bench's oracle). A
+ * format $1 (throwaway)
+ * frame only restores SR, which sets M again: RTE goes on with the frame on
+ * the master stack. Frames of faults (formats $7, $8, $A, $B) resume at
+ * their PC: RelevoJIT restarts the instruction there instead of finishing
+ * the faulted bus cycle. */
 static void op_rte(relevo_cpu *c, uint16_t op)
 {
     (void)op;
     if (!supervisor_or_trap(c))
         return;
-    uint32_t sr = cpu_pop16(c);
-    uint32_t target = cpu_pop32(c);
-    cpu_set_sr(c, (uint16_t)sr);
-    jump(c, target, c->insn_pc + 2);
+    if (c->model == RELEVO_68000) {
+        uint32_t sr = cpu_pop16(c);
+        uint32_t target = cpu_pop32(c);
+        cpu_set_sr(c, (uint16_t)sr);
+        jump(c, target, c->insn_pc + 2);
+        return;
+    }
+    for (;;) {
+        uint32_t sp = c->r.a[7];
+        uint32_t sr = cpu_read16(c, sp, ACC_DATA);
+        uint32_t target = cpu_read32(c, sp + 2, ACC_DATA);
+        unsigned fmt = cpu_read16(c, sp + 6, ACC_DATA) >> 12;
+        unsigned size = frame_bytes(c->model, fmt);
+        if (size == 0) {
+            c->r.a[7] = sp + 8;
+            cpu_exception_group1(c, VEC_FORMAT_ERROR);
+            return;
+        }
+        c->r.a[7] = sp + size;
+        cpu_set_sr(c, (uint16_t)sr);
+        if (fmt != 1) {
+            jump(c, target, c->insn_pc + 2);
+            return;
+        }
+    }
 }
 
 static void op_trap(relevo_cpu *c, uint16_t op)
@@ -197,6 +248,11 @@ static void op_chk(relevo_cpu *c, uint16_t op)
     ea_decode_op(c, &e, op, SZ_W);
     int32_t bound = (int32_t)sext(ea_read(c, &e), SZ_W);
     int32_t v = (int32_t)sext(c->r.d[(op >> 9) & 7], SZ_W);
+    if (c->model >= RELEVO_68020) {
+        cycles(c, 6);
+        chk_020(c, v, bound);
+        return;
+    }
     unsigned f = 0;
     if (v == 0)
         f |= CCR_Z;

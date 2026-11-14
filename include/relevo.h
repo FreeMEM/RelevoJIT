@@ -184,6 +184,10 @@ typedef struct relevo_regs {
     uint32_t sfc, dfc;      /* 68010 and later */
     relevo_fpreg fp[8];
     uint32_t fpcr, fpsr, fpiar;
+    /* MMU registers (MOVEC), 68040 and 68060. The interpreter keeps them
+     * but does not translate addresses. */
+    uint32_t tc, itt0, itt1, dtt0, dtt1, mmusr, urp, srp;
+    uint32_t buscr, pcr;    /* 68060 */
 } relevo_regs;
 
 /* ---- Running ---------------------------------------------------------- */

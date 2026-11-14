@@ -278,7 +278,8 @@ void test_mul_l(void)
     r->d[1] = 0x10000;
     step();
     CHECK_EQ(r->d[0], 0);
-    CHECK_EQ(ccr(), CCR_X | CCR_Z | CCR_V);
+    /* N and Z come from the 64-bit product (as FS-UAE, tests/oraculo) */
+    CHECK_EQ(ccr(), CCR_X | CCR_V);
     done();
 
     /* MULS.L D1,D0 */
@@ -295,7 +296,7 @@ void test_mul_l(void)
     r->d[1] = 2;
     step();
     CHECK_EQ(r->d[0], 0x80000000);
-    CHECK_EQ(ccr(), CCR_N | CCR_V);
+    CHECK_EQ(ccr(), CCR_V);
     done();
 
     START(RELEVO_68020, 0x4C01, 0x0800);
@@ -444,8 +445,8 @@ void test_div_l(void)
     CHECK_EQ(r->d[2], 2);
     done();
 
-    /* Division by zero: vector 5, the next instruction's address, C
-     * cleared, registers unchanged */
+    /* Division by zero: vector 5, the next instruction's address,
+     * registers and flags unchanged (as FS-UAE, tests/oraculo) */
     START(RELEVO_68020, 0x4C41, 0x0402);
     r->d[0] = 100;
     r->d[1] = 0;
@@ -455,7 +456,7 @@ void test_div_l(void)
     check_exception(VEC_ZERO_DIVIDE, CODE + 4);
     CHECK_EQ(r->d[0], 100);
     CHECK_EQ(r->d[2], 5);
-    CHECK(!(get16(r->a[7]) & CCR_C));
+    CHECK(get16(r->a[7]) & CCR_C);
     done();
 }
 
@@ -490,9 +491,11 @@ void test_chk_l(void)
     step();
     CHECK_EQ(r->pc, CODE + 2);
     r->d[0] = 0;
+    set_ccr(CCR_V | CCR_C);
     step();
     CHECK_EQ(r->pc, CODE + 4);
-    CHECK(ccr() & CCR_Z);
+    /* in range: the flags stay (as FS-UAE, tests/oraculo) */
+    CHECK_EQ(ccr(), CCR_V | CCR_C);
     done();
 
     START(RELEVO_68020, 0x4101);

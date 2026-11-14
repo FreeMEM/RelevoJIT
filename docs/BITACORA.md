@@ -20,7 +20,7 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   SingleStepTests/m68000 pasa entero (registros, memoria y, si se puede, ciclos). Se puede repartir por grupos de
   instrucciones entre dos agentes.
 - [~] R3 **68010 a 68040 sin FPU.** En dos partes a la vez, en worktrees aparte:
-  - [ ] R3a: el banco contra el oráculo (programas 68020 generados que corren en FS-UAE con el Kickstart real y en
+  - [x] R3a (2026-11-14): el banco contra el oráculo (programas 68020 generados que corren en FS-UAE con el Kickstart real y en
     Emu68 por `jit-host`, y comparan registros y memoria con RelevoJIT), y lo del 68010: VBR, `MOVEC`, `MOVES`, `RTD`,
     marcos de excepción del 68010 en adelante (formatos 0, 2, 9, A, B del 020/030; 0, 2, 3, 4, 7 del 040).
   - [x] R3b (2026-11-14): modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
@@ -262,3 +262,80 @@ No hecho:
 
 Ficheros comunes tocados: `src/interp/ea.c` (modos nuevos, aparte del camino del 68000), `src/interp/interp.h` (una
 línea en `OPS_GROUPS`), `Makefile` (`tests/test_020.c` en la lista) y `tests/tests.h`.
+
+### 2026-11-14 — R3a
+
+Hecho:
+
+- El banco contra el oráculo, en `tools/oraculo/`. `oraculo.py gen` genera programas 68k con vasm: cada uno ejecuta
+  cientos de casos de un grupo de instrucciones, con registros, banderas y memoria al azar (y valores de borde), y
+  guarda tras cada caso D0-D7, A0-A7, SR, el vector de la excepción si la hubo, 32 bytes de memoria y 32 del marco.
+  Seis programas: `arith`, `move`, `branch` (lo del 68000, en modo 68020), `m68010`, `frames` (excepciones y `RTE`
+  con cada formato) y `m68020` (lo de R3b).
+- Elección: el mismo binario plano corre en los tres sitios, en $140000, en modo supervisor y con las interrupciones
+  enmascaradas; datos y resultados en direcciones fijas ($15C000-$16FFFF), así que todo se compara tal cual. Usa
+  solo instrucciones del 68000 y `MOVEC`, y su propia tabla de vectores (VBR). En FS-UAE lo envuelve
+  `tools/oraculo/amiga.s` (AllocAbs, Supervisor, la salida en hex por el Shell); en RelevoJIT, `tests/oraculo.c`;
+  en Emu68, `jit-host` tal cual (carga en $140000 y vuelca la memoria). Así no hace falta imitar AmigaOS.
+- `make test` ejecuta `build/oraculo` sobre `tests/oraculo/*.txt` (la salida de FS-UAE como 68020 y como 68040,
+  texto) con los `.bin` de al lado. `make oraculo` lo regenera todo (FS-UAE con `DASH_KICKSTART`; Emu68 si hay un
+  `jit-host` reciente, `JIT_HOST=`). Un `?` en el oráculo no se compara; una línea `NNNN x`, el caso entero.
+- `src/interp/ops_010.c`, grupo nuevo `010` (desde el 68010): `MOVEC` con los registros de cada modelo hasta el 060
+  (los que faltan dan instrucción ilegal; CACR por `cache_write_cacr`), `MOVES` (acceso normal: no hay códigos de
+  función en el bus), `RTD`, `MOVE CCR,<ea>`. `MOVE SR,<ea>` privilegiada desde el 68010. Registros nuevos en
+  `relevo_regs`: TC, ITT0/1, DTT0/1, MMUSR, URP, SRP, BUSCR, PCR.
+- Marcos (`exception.c`): formato 2 en el 020+ para división por cero, `CHK`/`CHK2`, `TRAPV`/`TRAPcc` y traza;
+  errores de bus y de dirección con formato 8 (68010), B (020/030), 2 o 7 (040); trama de descarte (formato 1)
+  cuando llega una interrupción con M puesto. `RTE` lee el formato y quita lo que toca en cada modelo; un formato
+  que el modelo no tiene es error de formato (vector 14). Tras un error de bus, `RTE` repite la instrucción entera.
+- 7 pruebas unitarias nuevas (`tests/test_010.c`): lo que el oráculo no alcanza (el 68010, errores de bus,
+  interrupción con M, error de formato).
+
+Comprobado contra el oráculo (FS-UAE 3.2.35, Kickstart 40.68, A1200 con 68EC020 y con 68040):
+
+- 1525 casos por modelo; RelevoJIT da lo mismo en todos los que se comparan. Emu68 (`jit-host`) da lo mismo que el
+  68040 en `arith`, `move` y `branch`.
+- Lo que el oráculo decidió, donde los manuales dicen "indefinido" (ahora RelevoJIT hace lo mismo):
+  - `CHK.W`/`CHK.L` (020+): Z, V y C no cambian; N a 0 si Dn > límite, si no a 1 si Dn < 0. Cambia la decisión de R3b.
+  - División por cero: en el 020, `DIVU.W` pone V, N del signo del dividendo y Z al revés; `DIVS.W` solo Z. En el
+    040, `DIVU.W` borra N, Z, V y C; `DIVS.W` solo C. `DIVx.L`: nada cambia.
+  - `MULx.L`: N y Z del producto de 64 bits, también en 32 bits con desborde. Con Dh = Dl queda la parte baja
+    (R3b dejaba la alta).
+  - `DIVx.L` con desborde: N a 1, como decidió R3b; Z sale a veces a 1 y no he dado con la regla (no se compara).
+  - Formato 2 en el 040: la dirección es la de la instrucción siguiente (en el 020, la de la propia). Error de
+    dirección en el 040: la dirección con el bit 0 a cero. Error de formato: se quitan antes las 4 primeras palabras
+    del marco malo. MMUSR guarda los 32 bits.
+- Lo que FS-UAE hace contra lo que dicen los manuales (RelevoJIT sigue los manuales; esos casos no se comparan y
+  llevan una nota en su línea):
+  - `TRAPcc` y `CHK2` apilan como PC su propia dirección, no la siguiente.
+  - `CMP2`/`CHK2` comparan siempre con signo (los manuales admiten límites sin signo).
+  - `CAS2.W` que falla pone en la mitad alta de Dc la de Du.
+  - `DIVS.L` de 64 bits con cociente de más de 32 bits: sin desborde y cociente 0.
+  - `RTE` acepta los formatos 4, 7, 8, 9, A y B en el 020 y en el 040, y no el 3 en el 040.
+  - Error de dirección del 020: el marco B lleva la palabra de estado en +8, no en +10 (no se comparan +8 a +15).
+
+No hecho:
+
+- Errores de bus contra el oráculo: un Amiga no los da. Solo pruebas unitarias.
+- Emu68 en `jit-host` muere (bajo `qemu-aarch64_be`) al escribir SR o al tomar una excepción: solo corre los tres
+  programas sin excepciones. El `jit-host` compilado en `dashos` es anterior a U7 (no carga programas): hay que
+  recompilarlo (`make -C ~/Projects/dashos/jit-host`) o dar otro con `JIT_HOST=`.
+- `RTE` de un marco de fallo no termina el ciclo de bus: repite la instrucción. Traza T0 (cambio de flujo), sin
+  hacer. El 68030 y el 060 no están en el oráculo (FS-UAE con `cpu = 68030` se puede añadir a `MODELS`).
+- Los textos del oráculo ocupan unos 800 KB; los `.bin`, 270 KB.
+
+Cómo usar el banco (para R3b y lo que venga):
+
+- Un programa es una función `prog_<nombre>(rng)` en `tools/oraculo/oraculo.py` que devuelve casos (`Case`: código
+  en sintaxis de vasm, registros, SR, BUF); se apunta en `PROGRAMS`. Como mucho 496 casos por programa.
+- `oraculo.py gen NOMBRE`, `oraculo.py fsuae --cpu 68020 NOMBRE` (y `--cpu 68040`), `make`, y
+  `oraculo.py relevo NOMBRE` (o `build/oraculo -v 20 tests/oraculo/NOMBRE.68020.txt`) enseña las diferencias por
+  instrucción y campo. `build/bench/NOMBRE.CPU.raw.txt` es la salida de FS-UAE sin máscaras.
+- Lo que el manual deja indefinido se toma del oráculo. Si el oráculo contradice al manual, `case.skip(...)` y una
+  nota en `case.desc`.
+
+Ficheros comunes tocados: `src/exception.c` (marcos), `src/interp/interp.h` (una línea en `OPS_GROUPS`),
+`src/interp/ops_control.c` (`RTE`, `CHK.W` del 020+), `src/interp/ops_system.c` (`MOVE SR` privilegiada),
+`src/interp/ops_muldiv.c` y `ops_020.c`/`ops_020.h` (banderas del oráculo), `src/cpu.h` y `src/memory.c` (tamaño del
+acceso que falla), `include/relevo.h` (registros de la MMU), `Makefile`, `tests/tests.h`, `tests/test_020.c`
+(pruebas de R3b con las banderas nuevas).

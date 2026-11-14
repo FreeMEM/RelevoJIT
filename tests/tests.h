@@ -35,6 +35,13 @@
     X(trap_and_rte)             \
     X(cycles)                   \
     X(divide_by_zero)           \
+    X(movec_68010)              \
+    X(move_from_sr_privileged)  \
+    X(rtd)                      \
+    X(bus_error_frames)         \
+    X(frames_format2)           \
+    X(interrupt_master_stack)   \
+    X(format_error)             \
     X(ea_020_brief_scaled)      \
     X(ea_020_full_no_indirect)  \
     X(ea_020_memory_indirect)   \

@@ -78,7 +78,9 @@ Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
 
 1. **SingleStepTests/m68000**: miles de casos por instrucción con estado antes y después (68000).
 2. **Diferencial intérprete contra JIT**, con estados al azar, por instrucción.
-3. **Programas 68k** del banco de UsirOS (`jit-host/pruebas68k`), contra Emu68 en `qemu-aarch64_be` y contra el
+3. **Banco contra el oráculo** (`tools/oraculo/`, R3a): programas generados con cientos de casos por instrucción,
+   en FS-UAE con el Kickstart real (68020 y 68040), en Emu68 y en RelevoJIT; `make test` compara con lo guardado.
+4. **Programas 68k** del banco de UsirOS (`jit-host/pruebas68k`), contra Emu68 en `qemu-aarch64_be` y contra el
    oráculo de FS-UAE con el Kickstart real (`tools/emu_run.py` de Dash).
 
 ## Fases
