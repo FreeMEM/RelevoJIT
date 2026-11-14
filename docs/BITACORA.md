@@ -13,7 +13,7 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   65 536 entradas, accesos big-endian, bucle del intérprete. Prueba: `NOP` y `RTS` a 0 terminan.
 - [~] R2 **Intérprete 68000.** Se hace en partes: R2a (base: modos de dirección, excepciones, interrupciones, traza, `STOP`, movimiento y saltos) y después R2b (aritmética y lógica) y R2c (desplazamientos, bits, BCD, MUL/DIV) a la vez.
   - [x] R2a: base, excepciones y movimiento y saltos (2026-11-14).
-  - [ ] R2b: aritmética y lógica, en `src/interp/ops_arith.c`.
+  - [x] R2b: aritmética y lógica, en `src/interp/ops_arith.c` (2026-11-14).
   - [ ] R2c: desplazamientos, bits, BCD, MUL/DIV, en `src/interp/ops_bits.c`. Todas las instrucciones, modos de dirección, excepciones (grupos 0, 1 y 2, error de
   dirección y de bus), modo supervisor, `STOP`, `TRACE`, interrupciones, ciclos del manual. Hecho cuando
   SingleStepTests/m68000 pasa entero (registros, memoria y, si se puede, ciclos). Se puede repartir por grupos de
@@ -136,3 +136,36 @@ Falta:
   instrucción impar es aún el del 68000.
 - Interrupciones solo con autovector (sin ciclo IACK del anfitrión ni interrupción espuria).
 - El presupuesto de `relevo_run` sigue contando instrucciones; los ciclos ya están para usarlos.
+
+### 2026-11-14 — R2b
+
+Hecho:
+
+- `src/interp/ops_arith.c`: ADD, ADDA, ADDI, ADDQ, ADDX, SUB, SUBA, SUBI, SUBQ, SUBX, CMP, CMPA, CMPI, CMPM, AND,
+  ANDI, OR, ORI, EOR, EORI, NEG, NEGX y NOT. Banderas con dos funciones (`add_flags`, `sub_flags`); en ADDX, SUBX y
+  NEGX la Z solo se borra.
+- Ciclos: los del manual menos 4 por palabra y por acceso. Lo interno que queda: 2 en .L desde memoria, 4 desde
+  registro o inmediato (CMP y CMPA, siempre 2); ADDA y SUBA .W 4; ADDQ y SUBQ a An o a Dn.L 4; NEG, NEGX y NOT a
+  Dn.L 2; ADDX y SUBX en memoria, 2 al empezar.
+- No se tocó ningún fichero común (`table.c`, `interp.h`, `ea.c`).
+
+Lo que dicen los datos y no los manuales (comprobado contra SingleStepTests):
+
+- CMPM: si falla una lectura, el PC apilado va una palabra más allá. Ay ya ha avanzado 2 (en .W y en .L); Ax no
+  ha avanzado.
+- ADDX y SUBX con `-(An)`: el PC apilado también va una palabra más allá. En .L se lee primero la palabra baja, en
+  An-2, y An no cambia hasta tener las dos; en .B y .W An baja antes de leer. Solo el primer `-(An)` cuesta 2
+  ciclos. Al escribir .L, primero la palabra baja.
+- Los demás casos de error de dirección salen solos con `ea_read`/`ea_write` de R2a.
+
+Resultado de `make sst` para la lista de R2b: los 39 ficheros pasan 2500 de 2500, también con los ciclos. Son ADD,
+SUB, CMP, AND, OR, EOR, NEG, NEGX, NOT, ADDX y SUBX en .b, .w y .l, y ADDA, SUBA y CMPA en .w y .l. ADDI, ADDQ,
+SUBI, SUBQ, CMPI, CMPM, ANDI, ORI y EORI van dentro de esos ficheros. Las 53 de R2a siguen pasando enteras. En total
+230 000 de 317 500; el resto es R2c.
+
+Comprobado: `make test` (35 pruebas) y la lista de R2b con gcc 16 y clang 23, también con ASan y UBSan.
+
+Falta:
+
+- R2c.
+- CMPI con operandos relativos al PC (68020 en adelante, R3).
