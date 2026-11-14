@@ -19,19 +19,25 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   dirección y de bus), modo supervisor, `STOP`, `TRACE`, interrupciones, ciclos del manual. Hecho cuando
   SingleStepTests/m68000 pasa entero (registros, memoria y, si se puede, ciclos). Se puede repartir por grupos de
   instrucciones entre dos agentes.
-- [~] R3 **68010 a 68040 sin FPU.** En dos partes a la vez, en worktrees aparte:
+- [x] R3 **68010 a 68040 sin FPU.** En dos partes a la vez, en worktrees aparte:
   - [x] R3a (2026-11-14): el banco contra el oráculo (programas 68020 generados que corren en FS-UAE con el Kickstart real y en
     Emu68 por `jit-host`, y comparan registros y memoria con RelevoJIT), y lo del 68010: VBR, `MOVEC`, `MOVES`, `RTD`,
     marcos de excepción del 68010 en adelante (formatos 0, 2, 9, A, B del 020/030; 0, 2, 3, 4, 7 del 040).
   - [x] R3b (2026-11-14): modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
     `MULx.L`, `DIVx.L`, `EXTB.L`, `CHK.L`, `CHK2`, `CMP2`, `CAS`, `CAS2`, `TRAPcc`, `PACK`, `UNPK`, campos de bits,
     `Bcc.L`, `LINK.L`, `MOVE16` y caché (`CACR`, `CPUSH`, `CINV`).
-- [ ] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
+- [~] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
   extendida en software propio.
 - [ ] R5 **Banco diferencial.** Los programas de `dashos/jit-host/pruebas68k` en RelevoJIT, en Emu68
   (`qemu-aarch64_be`) y en FS-UAE con el Kickstart real; las salidas, iguales.
-- [ ] R6 **JIT x86-64.** Emisor, bloques, asignador de registros, memoria con `MOVBE`, banderas, encadenado, caché e
-  invalidación. Diferencial contra el intérprete con estados al azar.
+- [~] R6 **JIT x86-64.** En partes:
+  - [ ] R6a: la base. Emisor x86-64, bloques y caché de traducciones, registros del 68k en memoria con asignador por
+    bloque, memoria con `MOVBE` (o `BSWAP`), banderas solo cuando alguien las lee, salida al bucle con
+    interrupciones. Las instrucciones que no traduce caen al intérprete (una a una, dentro del bloque o cortándolo).
+    Traduce de verdad un primer grupo: `MOVE`, `MOVEQ`, `LEA`, `ADD`, `SUB`, `CMP`, `AND`, `OR`, `EOR`, `TST`, `Bcc`,
+    `DBcc`, `BRA`, `BSR`, `JSR`, `RTS`. Diferencial contra el intérprete con estados al azar, y SingleStepTests y el
+    banco del oráculo también en modo JIT.
+  - [ ] R6b: el resto de instrucciones enteras, encadenado de bloques, invalidación por escritura en código.
 - [ ] R7 **JIT de la FPU y rendimiento.**
 
 ## Bloqueos
@@ -323,6 +329,9 @@ No hecho:
 - `RTE` de un marco de fallo no termina el ciclo de bus: repite la instrucción. Traza T0 (cambio de flujo), sin
   hacer. El 68030 y el 060 no están en el oráculo (FS-UAE con `cpu = 68030` se puede añadir a `MODELS`).
 - Los textos del oráculo ocupan unos 800 KB; los `.bin`, 270 KB.
+
+Decisión del coordinador (2026-11-14): en las 7 diferencias con FS-UAE manda el manual. FS-UAE no es exacto en
+estos casos raros (`DIVS.L` sin desborde con cociente de 64 bits lo delata). Quedan pendientes de un 68020 real.
 
 Cómo usar el banco (para R3b y lo que venga):
 
