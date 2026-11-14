@@ -26,8 +26,8 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
   - [x] R3b (2026-11-14): modos de dirección del 68020 (índice escalado, base y desplazamientos largos, indirectos con memoria),
     `MULx.L`, `DIVx.L`, `EXTB.L`, `CHK.L`, `CHK2`, `CMP2`, `CAS`, `CAS2`, `TRAPcc`, `PACK`, `UNPK`, campos de bits,
     `Bcc.L`, `LINK.L`, `MOVE16` y caché (`CACR`, `CPUSH`, `CINV`).
-- [~] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
-  extendida en software propio.
+- [x] R4 **FPU.** 68881/68882 y la del 040 (las que faltan en el 040 van a la excepción, como en el real). Precisión
+  extendida en software propio (2026-11-14).
 - [ ] R5 **Banco diferencial.** Los programas de `dashos/jit-host/pruebas68k` en RelevoJIT, en Emu68
   (`qemu-aarch64_be`) y en FS-UAE con el Kickstart real; las salidas, iguales.
 - [~] R6 **JIT x86-64.** En partes:
@@ -348,3 +348,78 @@ Ficheros comunes tocados: `src/exception.c` (marcos), `src/interp/interp.h` (una
 `src/interp/ops_muldiv.c` y `ops_020.c`/`ops_020.h` (banderas del oráculo), `src/cpu.h` y `src/memory.c` (tamaño del
 acceso que falla), `include/relevo.h` (registros de la MMU), `Makefile`, `tests/tests.h`, `tests/test_020.c`
 (pruebas de R3b con las banderas nuevas).
+
+### 2026-11-14 — R4
+
+Hecho:
+
+- `src/fpx.c`: aritmética extendida propia (C11, sin `__int128`): suma, resta, producto, división, raíz,
+  `FINT`/`FINTRZ`, `FMOD`/`FREM` con el byte de cociente, `FSCALE`, `FGETEXP`, `FGETMAN`, `FCMP`. Mantisas exactas
+  de 128 bits y un solo redondeo. Modo y precisión del FPCR; la precisión simple o doble solo recorta la mantisa
+  (el exponente sigue extendido, como en un registro). Desnormales y no normalizados a la entrada; resultados
+  desnormales a la salida. NaN: gana el destino; el de un `OPERR` es todo unos.
+- `src/fpx_dec.c`: decimal empaquetado de entrada y salida (factor k estático y en Dn) con enteros grandes,
+  exacto. La ROM de `FMOVECR` con 128 bits por constante; `e` y `log10(2)` redondean hacia abajo, como la ROM real.
+- `src/fpx_trans.c`: las transcendentales del 68881. Los casos especiales (ceros, infinitos, fuera de dominio,
+  `DZ`) según el manual; el resto con las funciones `long double` de C99 (`-lm`, añadido al Makefile).
+- `src/interp/ops_fpu.c` (grupo `fpu`): `FMOVE` en todos los formatos y modos, `FMOVEM` de datos (estático y
+  dinámico, predecremento, postincremento y control) y de control, `FMOVECR`, toda la aritmética, `FSINCOS`,
+  `FCMP`, `FTST`, `FBcc`, `FScc`, `FDBcc`, `FTRAPcc`, `FNOP`, `FSAVE`/`FRESTORE` (marcos nulo e inactivo de 68881,
+  68882, 040 y 060; uno malo es error de formato). Las formas `FSxxx`/`FDxxx` del 040.
+- 040: transcendentales, `FMOVECR`, `FINT`, `FINTRZ`, `FGETEXP`, `FGETMAN`, `FMOD`, `FREM`, `FSCALE`, `FSGLMUL` y
+  `FSGLDIV` van a línea F (vector 11). 060: igual, pero `FINT` y `FINTRZ` sí; `FScc`, `FDBcc` y `FTRAPcc`, línea F.
+- Excepciones: el FPSR (byte de excepción, acumulado, condiciones, cociente) y FPIAR. Una excepción habilitada
+  queda pendiente y se toma al empezar la instrucción de coma flotante siguiente, como en el 68881: marco de formato
+  0 con su dirección, vectores 48 a 54 por prioridad. Con `SNAN`, `OPERR` o `DZ` habilitadas no se escribe el
+  destino. `BSUN` se toma en el acto. `FSAVE` guarda la pendiente y `FRESTORE` la devuelve.
+- Pruebas (`tests/test_fpu.c`, 17 nuevas): valores del manual, y 600 000 operaciones al azar contra el x87 del
+  anfitrión (mismo formato y misma precisión de control): suma, resta, producto, división, raíz, `frndint`,
+  `fprem`/`fprem1` (con los bits de cociente), `fscale` y conversión a simple y doble, en los 4 modos y las 3
+  precisiones. Coinciden en valor y en banderas.
+- Banco del oráculo: `tools/oraculo/fpu_progs.py`, cinco programas (`fpu`, `fpumove`, `fpucc`, `fputrap`,
+  `fputrans`, 1622 casos). FS-UAE como 68020 con 68882 y como 68040, cada programa en su arranque. `fputrap`, solo
+  en 68040. `Case.post` nuevo: código tras el caso, también tras una excepción.
+
+Comprobado contra el oráculo (FS-UAE 3.2.35, Kickstart 40.68):
+
+- Todos los casos comparados coinciden en los dos modelos: modos de dirección, formatos, registros, `FMOVEM`,
+  registros de control, los 32 predicados, `FSAVE`, empaquetado, constantes. Las transcendentales, a 48 bits.
+- FS-UAE no sirve para la precisión: calcula en doble. Su modo `uae_fpu_softfloat` da extendido pero pierde FPCR
+  y FPSR. Por eso los casos usan valores exactos en doble; la precisión la comprueba el x87.
+
+Lo que FS-UAE hace distinto (manda el manual; no se compara y lleva nota en su línea):
+
+- No toma nunca excepciones de la FPU. En el 040 ejecuta lo que el chip deja al software.
+- Banderas: `UNFL` en el acumulado con todo inexacto; `INEX2` falso en `FINT`, `FSCALE`, `FMOD`, `FREM`; ninguno
+  al pasar a entero o a empaquetado; ni `OPERR` en entero fuera de rango. No pone el byte de cociente.
+- `FSCALE` no es exacto. `FINT` redondea los empates hacia fuera. Pierde el signo de -0 en las condiciones.
+- Escribe mal infinitos y NaN con `FMOVEM`. FPIAR: no cambia con `FMOVE` de salida; `FRESTORE` lo cambia.
+- `FMOVE.P` con k en Dn y `(An)+`/`-(An)`: no mueve An. `FScc (An)+`: no incrementa.
+- `FTRAPcc` en el 68882: línea F, y alguno cuelga FS-UAE. Marco nulo `$00380000`. FPCR guarda los bits 3-0.
+
+Decisiones donde el manual no es claro (sin comprobar en un chip real):
+
+- Precisión simple o doble del FPCR y `FSxxx`/`FDxxx`: solo la mantisa; el exponente, extendido.
+- `UNFL` en el byte de excepción con todo resultado diminuto (antes de redondear), también exacto; en el acumulado
+  solo con `INEX2`. `FMOVE` de un desnormal a registro lo pone.
+- `FMOVECR` no pone `INEX2` en extendido. Desplazamientos sin constante: línea F, como FS-UAE.
+- NaN a entero: `OPERR` y el mayor entero de su signo.
+- `FSGLMUL`/`FSGLDIV`: producto exacto redondeado a 24 bits, sin truncar antes los operandos.
+- FPIAR: lo cambian las instrucciones generales (menos `FMOVEM`) y las condicionales.
+- Instrucción no implementada en 040/060: el marco de línea F normal (formato 0), sin la dirección efectiva.
+
+No hecho:
+
+- Ciclos de la FPU (solo cuentan los accesos al bus).
+- 040/060: el empaquetado y los operandos desnormales se ejecutan; el chip real da "tipo de dato no implementado"
+  (vector 55). 060: tampoco hay "dirección efectiva no implementada" (vector 60).
+- Marcos ocupados (busy) y los marcos propios del 040 para excepciones de la FPU (formato 3).
+- Transcendentales en modos dirigidos: la biblioteca redondea al más cercano; el modo solo actúa al bajar a simple
+  o doble. Error: el de `long double` del anfitrión (x86: unas unidades en el último bit de 64; donde
+  `long double` es un `double`, unos 53 bits).
+
+Ficheros comunes tocados: `src/cpu.h` (dos campos de estado de la FPU y `fpu_reset`), `src/cpu.c` (llama a
+`fpu_reset` al crear y en `relevo_reset`), `src/interp/interp.h` (una línea en `OPS_GROUPS`), `Makefile` (`-lm` y
+`tests/test_fpu.c`), `tests/tests.h`, `tests/oraculo.c` (FPU en 020+), `tools/oraculo/oraculo.py` (`Case.post`, los
+programas de FPU, arranque aparte con 68882, `ORACULO_RANGE` para buscar un caso) y `README.md`.
+

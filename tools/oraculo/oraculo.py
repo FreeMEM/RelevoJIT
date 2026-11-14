@@ -133,6 +133,7 @@ class Case:
                                        for l in self.code)
         self.user = False       # ends in user mode: an ILLEGAL brings it back
         self.ignore = {}        # model or "all" -> [(field, lo, hi) or ("sr", mask)]
+        self.post = []          # code after the case, also after an exception
 
     def skip(self, what, models=("all",)):
         for m in models:
@@ -825,6 +826,11 @@ PROGRAMS = {
     "m68020": prog_m68020,
 }
 
+import fpu_progs                                       # noqa: E402
+fpu_progs.BUF = BUF
+FPU_PROGRAMS = fpu_progs.programs(Case)
+PROGRAMS.update(FPU_PROGRAMS)
+
 # ---- Generating ---------------------------------------------------------------
 
 CORE_HEAD = f"""\
@@ -954,6 +960,9 @@ def fix_labels(cases):
 def generate(name):
     rng = random.Random(f"relevo-oraculo-{name}")
     cases = PROGRAMS[name](rng)
+    if os.environ.get("ORACULO_RANGE"):     # (debugging: only cases lo-hi)
+        lo, hi = map(int, os.environ["ORACULO_RANGE"].split("-"))
+        cases = cases[lo:hi]
     if len(cases) > MAX_CASES:
         sys.exit(f"{name}: {len(cases)} cases, at most {MAX_CASES}")
     fix_labels(cases)
@@ -1006,6 +1015,7 @@ def core_source(cases):
         out.append(f"after{k}:")
         out.append("    move.w sr,REC_SR")
         out.append("    move.l a7,REC_A7")
+        out.extend("    " + line for line in c.post)
         out.append("    lea STACK2,a7")
         out.append("    jsr epilogue")
     out.append("    jmp finish")
@@ -1147,10 +1157,24 @@ def run_fsuae(names, cpu):
     kick = os.environ.get("DASH_KICKSTART")
     if not kick:
         sys.exit("DASH_KICKSTART is not set: FS-UAE would boot AROS, which is no oracle")
-    exes = [wrapper(n) for n in names]
-    extra = "" if cpu == "68020" else f"cpu = {cpu}\nfpu = {cpu}\n"
-    results = emu_run.run_programs([str(e) for e in exes], timeout=float(os.environ.get("ORACULO_TIMEOUT", "240")), kickstart=kick,
-                                   extra_config=extra)
+    # Without an FPU program, the A1200's 68EC020 alone; with one, a 68020 and
+    # a 68882 (each FPU program in a boot of its own: they are slow).
+    if cpu == "68020":
+        names = [n for n in names if n not in fpu_progs.ONLY_68040]
+    groups = [[n for n in names if n not in FPU_PROGRAMS]] + [[n] for n in names if n in FPU_PROGRAMS]
+    names, results = [], []
+    for k, group in enumerate(groups):
+        if not group:
+            continue
+        if cpu != "68020":
+            extra = f"cpu = {cpu}\nfpu = {cpu}\n"
+        else:
+            extra = "" if k == 0 else "cpu = 68020\nfpu = 68882\n" + os.environ.get("ORACULO_FPU_EXTRA", "")
+        exes = [wrapper(n) for n in group]
+        names += group
+        results += emu_run.run_programs([str(e) for e in exes],
+                                        timeout=float(os.environ.get("ORACULO_TIMEOUT", "240")),
+                                        kickstart=kick, extra_config=extra)
     for name, r in zip(names, results):
         if r.output is None or r.timed_out:
             print(f"{name}: no output from FS-UAE ({'timeout' if r.timed_out else r.rc})")

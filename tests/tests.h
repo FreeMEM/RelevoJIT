@@ -38,6 +38,23 @@
     X(movec_68010)              \
     X(move_from_sr_privileged)  \
     X(rtd)                      \
+    X(fpx_against_x87)          \
+    X(fpx_against_x87_more)     \
+    X(fpx_basic)                \
+    X(fpx_int_rem)              \
+    X(fpx_conversions)          \
+    X(fpx_packed)               \
+    X(fpx_constants)            \
+    X(fpx_transcendental)       \
+    X(fpu_table_no_conflicts)   \
+    X(fpu_reset_state)          \
+    X(fpu_move_and_arith)       \
+    X(fpu_operands)             \
+    X(fpu_fmovem)               \
+    X(fpu_conditions)           \
+    X(fpu_exceptions)           \
+    X(fpu_fsave_frestore)       \
+    X(fpu_models)               \
     X(bus_error_frames)         \
     X(frames_format2)           \
     X(interrupt_master_stack)   \

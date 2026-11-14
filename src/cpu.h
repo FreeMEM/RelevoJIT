@@ -110,6 +110,12 @@ struct relevo_cpu {
     /* Bytes of the access that took a bus error (for the 68010+ frames). */
     unsigned fault_size;
 
+    /* FPU (interp/ops_fpu.c): the vector of an enabled exception to take
+     * before the next floating-point instruction (0: none), and whether
+     * FSAVE gives a null frame (after a reset, until an FPU instruction). */
+    unsigned fpu_pending;
+    bool fpu_null;
+
     atomic_uint ipl;
     unsigned prev_ipl;          /* level 7 is edge triggered */
     atomic_bool stop_request;
@@ -327,5 +333,9 @@ bool cpu_between_insns(relevo_cpu *cpu);
  * claimed (0 unless there is a bug). */
 unsigned interp_fill_table(relevo_handler *table, relevo_model model,
                            relevo_fpu fpu);
+
+/* interp/ops_fpu.c: the FPU after a reset (registers NaN, FPCR, FPSR and
+ * FPIAR 0, null state). */
+void fpu_reset(relevo_cpu *cpu);
 
 #endif /* RELEVO_CPU_H */

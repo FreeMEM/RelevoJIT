@@ -53,6 +53,9 @@ With `RELEVO_OPT_EXIT_ON_PC_ZERO`, `relevo_run()` returns `RELEVO_EXIT_PC_ZERO` 
 the host can call 68k code by pushing 0 as its return address (as Emu68 does). The host can also take line A and
 line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_f`).
 
+With `cfg.fpu` the 68020 and 68030 get a 68881 or 68882 and the 68040 and 68060 their own FPU, in extended
+precision computed in software (`src/fpx*.c`); link with `-lm`, which the transcendental functions use.
+
 Interrupts come from the host with `relevo_set_ipl()`; `relevo_cycles()` gives the 68000 clock cycles spent so
 far. Unmapped pages (`RELEVO_PAGE_NONE`) give the CPU a bus error.
 
