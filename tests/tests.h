@@ -34,6 +34,7 @@
     X(reset_instruction)        \
     X(trap_and_rte)             \
     X(cycles)                   \
+    X(divide_by_zero)           \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

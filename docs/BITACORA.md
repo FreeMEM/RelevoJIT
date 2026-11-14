@@ -136,3 +136,39 @@ Falta:
   instrucción impar es aún el del 68000.
 - Interrupciones solo con autovector (sin ciclo IACK del anfitrión ni interrupción espuria).
 - El presupuesto de `relevo_run` sigue contando instrucciones; los ciclos ya están para usarlos.
+
+### 2026-11-14 — R2c
+
+Hecho:
+
+- `src/interp/ops_bits.c`: ASL, ASR, LSL, LSR, ROL, ROR, ROXL y ROXR en registro (cuenta inmediata o en Dn, módulo
+  64) y en memoria (palabra, de uno en uno); BTST, BCHG, BCLR y BSET con Dn y con inmediato; ABCD, SBCD y NBCD.
+- `src/interp/ops_muldiv.c`: MULU, MULS, DIVU y DIVS, con la excepción de división por cero. Cabecera privada
+  `ops_bits.h`; `ops_bits_init` llama a `ops_muldiv_init`.
+- Ciclos: los de las tablas del manual. Los de MULx salen de los unos (MULU) o de los cambios entre bits vecinos
+  (MULS) del operando. Los de DIVx, del bucle de restas del 68000 bit a bit: DIVU 76 a 136, 10 si desborda; DIVS
+  según los signos y los ceros del cociente.
+- Prueba unitaria nueva `divide_by_zero`: vector 5, PC de la instrucción siguiente, C a 0, Dn intacto y 38 ciclos
+  más los del operando.
+
+Lo que dicen los datos y no los manuales:
+
+- BCD: N es el bit 7 del resultado. ABCD pone V si la corrección enciende el bit 7; SBCD y NBCD, si lo apaga. ABCD
+  da acarreo si la suma corregida en la cifra baja pasa de 0x9F. SBCD resta 0x60 si la resta binaria se pasa de
+  cero, pero C y X salen de la resta ya corregida en la cifra baja (difieren con cifras no BCD).
+- DIVU y DIVS que desbordan: N a 1, Z y C a 0, V a 1; Dn no cambia.
+- BTST Dn,#imm tarda 10 ciclos, no los 8 de la tabla.
+- -(Ay),-(Ax) de ABCD y SBCD: 18 ciclos, un solo paso interno de 2 para los dos decrementos.
+
+Resultado de `make sst` (con ciclos): los 35 ficheros pasan 2500 de 2500, y con los ciclos exactos también 2500 de
+2500. Son ASL, ASR, LSL, LSR, ROL, ROR, ROXL y ROXR en .b, .w y .l; BTST, BSET, BCLR, BCHG; ABCD, SBCD, NBCD; MULU,
+MULS, DIVU, DIVS. Los de R2a siguen enteros. En total 220 000 de 317 500 (88 de 127 ficheros); lo que falta es R2b.
+
+Comprobado: `make test` (36 pruebas) y `make sst` con gcc 16 y clang 23, también con ASan y UBSan.
+
+Falta:
+
+- Los datos no traen ninguna división por cero. Solo la cubre la prueba unitaria; N, Z y V quedan como estaban
+  (el manual los da por indefinidos) y no está comprobado contra un 68000 real.
+- No hay errores de bus en los datos de estas instrucciones; los errores de dirección (MULx, DIVx y desplazamientos
+  en memoria) sí, y pasan.
