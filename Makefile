@@ -20,7 +20,7 @@ LIB := $(BUILD)/librelevo.a
 LIB_SRC := $(wildcard src/*.c src/interp/*.c)
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
-            tests/test_json.c tests/test_sst.c \
+            tests/test_020.c tests/test_json.c tests/test_sst.c \
             $(TEST_COMMON)
 SST_SRC := tests/sst.c $(TEST_COMMON)
 
