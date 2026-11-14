@@ -40,6 +40,24 @@ static void clear_state_memory(sst_env *env, const sst_state *s)
         env->mem[(s->reg[SST_PC] - 4 + i) & MASK] = 0;
 }
 
+/* Clears what the CPU may have pushed between the initial and final stack
+ * pointers, even where the test does not expect it (a wrong or missing
+ * instruction takes an exception), so that it cannot leak into the next
+ * test. */
+static void clear_stack(sst_env *env, uint32_t from, uint32_t to)
+{
+    uint32_t lo = from < to ? from : to, hi = from < to ? to : from;
+    if (hi - lo > 64)
+        return;
+    for (uint32_t a = lo - 4; a != hi + 4; a++)
+        env->mem[a & MASK] = 0;
+}
+
+void sst_env_clear(sst_env *env)
+{
+    memset(env->mem, 0, MEM_SIZE);
+}
+
 typedef struct why_buf {
     char *buf;
     size_t size, len;
@@ -86,7 +104,9 @@ bool sst_run_one(sst_env *env, const sst_test *t, char *why, size_t why_size)
     r->a[7] = (r->sr & RELEVO_SR_S) ? r->isp : r->usp;
     r->pc = start;
 
-    relevo_run(cpu, 1);
+    uint64_t cycles = relevo_cycles(cpu);
+    relevo_status st = relevo_run(cpu, 1);
+    env->cycles = (uint32_t)(relevo_cycles(cpu) - cycles);
 
     uint32_t got[SST_NREGS];
     for (int i = 0; i < 8; i++)
@@ -97,7 +117,9 @@ bool sst_run_one(sst_env *env, const sst_test *t, char *why, size_t why_size)
     got[SST_USP] = super ? r->usp : r->a[7];
     got[SST_SSP] = super ? r->a[7] : r->isp;
     got[SST_SR] = r->sr;
-    got[SST_PC] = r->pc + 4;    /* the tests give the next prefetch address */
+    /* The tests give the next prefetch address; a stopped CPU has not
+     * prefetched past STOP. */
+    got[SST_PC] = st == RELEVO_STOPPED ? r->pc : r->pc + 4;
 
     why_buf w = { why, why_size, 0, 0 };
     if (why_size > 0)
@@ -117,5 +139,7 @@ bool sst_run_one(sst_env *env, const sst_test *t, char *why, size_t why_size)
 
     clear_state_memory(env, in);
     clear_state_memory(env, out);
+    clear_stack(env, in->reg[SST_SSP], got[SST_SSP]);
+    clear_stack(env, in->reg[SST_USP], got[SST_USP]);
     return w.count == 0;
 }

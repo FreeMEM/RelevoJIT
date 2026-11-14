@@ -21,6 +21,19 @@
     X(line_f_host_stop)         \
     X(request_stop)             \
     X(independent_cpus)         \
+    X(table_no_conflicts)       \
+    X(address_error_frame)      \
+    X(bus_error_unmapped)       \
+    X(double_fault_halts)       \
+    X(trace)                    \
+    X(trace_not_after_illegal)  \
+    X(interrupt_autovector)     \
+    X(interrupt_nmi_edge)       \
+    X(stop_until_interrupt)     \
+    X(privilege_violation)      \
+    X(reset_instruction)        \
+    X(trap_and_rte)             \
+    X(cycles)                   \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

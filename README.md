@@ -11,8 +11,10 @@ Two engines, one API:
 - **Interpreter**: portable C11, accurate, the reference for the JIT.
 - **JIT**: translates 68k blocks to x86-64.
 
-Status: early work. The API, memory pages and the interpreter loop are in place; only `NOP`, `RTS` and the
-illegal/line A/line F exceptions run so far.
+Status: early work. The 68000 interpreter has its base: every addressing mode, all exceptions (address and bus
+errors with the 68000's long frame, trace, autovectored interrupts, `STOP`, double fault), cycle counts, and the
+data movement and program control instructions, which pass their SingleStepTests/m68000 files entirely, cycles
+included. Arithmetic, logic, shifts, bit operations, BCD, multiply and divide are next.
 
 It is the 68k engine of AlborOS on x86, in the same way Emu68 is on ARM.
 
@@ -23,7 +25,7 @@ make              # build/librelevo.a (and build/sst, the test runner)
 make CC=clang     # any C11 compiler
 make test         # unit tests, plus the NOP SingleStepTests if downloaded
 make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
-make sst          # run every SingleStepTests file: passed/total per instruction
+make sst          # run every SingleStepTests file: passed/total per instruction, and cycles
 ```
 
 ## Using it
@@ -49,6 +51,9 @@ relevo_status st = relevo_run(cpu, 1000000);
 With `RELEVO_OPT_EXIT_ON_PC_ZERO`, `relevo_run()` returns `RELEVO_EXIT_PC_ZERO` as soon as the PC reaches 0, so
 the host can call 68k code by pushing 0 as its return address (as Emu68 does). The host can also take line A and
 line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_f`).
+
+Interrupts come from the host with `relevo_set_ipl()`; `relevo_cycles()` gives the 68000 clock cycles spent so
+far. Unmapped pages (`RELEVO_PAGE_NONE`) give the CPU a bus error.
 
 ## License
 

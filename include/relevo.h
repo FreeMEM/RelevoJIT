@@ -17,8 +17,8 @@
  *   RELEVO_PAGE_ROM   read directly, writes are dropped;
  *   RELEVO_PAGE_HOST  every access calls the host's read/write functions
  *                     (chip registers, I/O);
- *   RELEVO_PAGE_NONE  nothing there (a bus error once exceptions are complete;
- *                     for now reads give 0 and writes are dropped).
+ *   RELEVO_PAGE_NONE  nothing there: the CPU takes a bus error. (Through
+ *                     relevo_read() reads give 0 and writes are dropped.)
  *
  * relevo_create() maps every whole page inside `memory_size` as RAM and the
  * rest as NONE. relevo_map() changes it. RAM and ROM pages must lie inside
@@ -104,6 +104,10 @@ typedef struct relevo_host {
      * any register. */
     relevo_trap_result (*line_a)(void *ctx, relevo_cpu *cpu, uint16_t opcode);
     relevo_trap_result (*line_f)(void *ctx, relevo_cpu *cpu, uint16_t opcode);
+
+    /* Called by the RESET instruction, which resets the devices around the
+     * CPU but not the CPU itself. */
+    void (*reset)(void *ctx);
 } relevo_host;
 
 /* relevo_config.options */
@@ -220,6 +224,11 @@ relevo_status relevo_run(relevo_cpu *cpu, uint64_t budget);
 
 /* Instructions executed since the CPU was created. */
 uint64_t relevo_instructions(const relevo_cpu *cpu);
+
+/* Clock cycles since the CPU was created: the 68000's, as the manual counts
+ * them (exception processing included). Other models are counted as if
+ * they were a 68000 for now. */
+uint64_t relevo_cycles(const relevo_cpu *cpu);
 
 /* Sets the interrupt level the CPU sees on its IPL pins (0 to 7). The CPU
  * takes the interrupt between instructions. Safe from any thread. */

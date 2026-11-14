@@ -11,7 +11,10 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
 - [x] R1 **Interfaz y bucle.** `include/relevo.h` como en el diseño (configuración, memoria con páginas de 64 KB,
   funciones del anfitrión, registros, `relevo_run`, `relevo_set_ipl`, `relevo_invalidate`). Estado de la CPU, tabla de
   65 536 entradas, accesos big-endian, bucle del intérprete. Prueba: `NOP` y `RTS` a 0 terminan.
-- [ ] R2 **Intérprete 68000.** Todas las instrucciones, modos de dirección, excepciones (grupos 0, 1 y 2, error de
+- [~] R2 **Intérprete 68000.** Se hace en partes: R2a (base: modos de dirección, excepciones, interrupciones, traza, `STOP`, movimiento y saltos) y después R2b (aritmética y lógica) y R2c (desplazamientos, bits, BCD, MUL/DIV) a la vez.
+  - [x] R2a: base, excepciones y movimiento y saltos (2026-11-14).
+  - [ ] R2b: aritmética y lógica, en `src/interp/ops_arith.c`.
+  - [ ] R2c: desplazamientos, bits, BCD, MUL/DIV, en `src/interp/ops_bits.c`. Todas las instrucciones, modos de dirección, excepciones (grupos 0, 1 y 2, error de
   dirección y de bus), modo supervisor, `STOP`, `TRACE`, interrupciones, ciclos del manual. Hecho cuando
   SingleStepTests/m68000 pasa entero (registros, memoria y, si se puede, ciclos). Se puede repartir por grupos de
   instrucciones entre dos agentes.
@@ -71,3 +74,65 @@ No hecho (R2):
 - Las páginas sin nada dan 0 al leer y no guardan al escribir; serán error de bus.
 - El presupuesto cuenta instrucciones, no ciclos. Los ciclos y las transacciones del bus de las pruebas no se
   comparan aún (el lector se los salta, salvo el total de ciclos).
+
+### 2026-11-14 — R2a
+
+Hecho:
+
+- Modos de dirección del 68000 en `src/interp/ea.c`: `ea_decode`, `ea_read`, `ea_write`. Las palabras de extensión
+  se leen al decodificar. `(An)+` y `-(An)` cambian el registro en el momento en que lo hace el 68000.
+- Accesos de la CPU con fallos (`cpu_read*`/`cpu_write*` en `src/cpu.h`): error de dirección en palabra o largo
+  impar (68000 y 68010) y error de bus en página sin nada. `relevo_read`/`relevo_write` no fallan.
+- Excepciones en `src/exception.c`. Grupo 0 con marco largo de 14 bytes: la palabra de estado lleva los bits altos
+  de IR, como en los datos. Salen de la instrucción con `longjmp` a `relevo_run`. Fallo dentro de un fallo:
+  `RELEVO_HALTED` hasta `relevo_reset`. Grupos 1 y 2, traza, interrupciones con autovector (el nivel 7 por flanco),
+  `STOP` que espera una interrupción, `RESET` con una función nueva del anfitrión (`host.reset`).
+- La traza queda pendiente y se toma antes de la instrucción siguiente, como en las pruebas. Ilegal, privilegio,
+  línea A/F y los errores de grupo 0 la cancelan.
+- Instrucciones: `ops_control.c` (Bcc, BRA, BSR, DBcc, Scc, JMP, JSR, RTS, RTR, RTE, TRAP, TRAPV, CHK, NOP),
+  `ops_move.c` (MOVE, MOVEA, MOVEQ, MOVEM, MOVEP, LEA, PEA, EXG, SWAP, LINK, UNLK, CLR, TST, EXT, TAS) y
+  `ops_system.c` (MOVE con SR, CCR y USP, ANDI/ORI/EORI a CCR y SR, STOP, RESET).
+- Ciclos del 68000: `relevo_cycles()`. Cada acceso al bus cuenta 4 (cada palabra de la instrucción también) y cada
+  instrucción suma sus ciclos internos. Así los errores de dirección salen bien solos.
+- `build/sst` compara los ciclos aparte (columna "cyc", `-c N` enseña los que no cuadran). Limpia la pila entre
+  pruebas y la memoria entera entre ficheros: antes una instrucción que faltaba ensuciaba las pruebas siguientes.
+- 13 pruebas unitarias nuevas (`tests/test_exceptions.c`): interrupciones, NMI, `STOP`, traza, error de bus, doble
+  fallo, privilegio, `RESET`, `TRAP`/`RTE`, ciclos y que la tabla no tenga dos manejadores para un código.
+
+Lo que dicen los datos y no los manuales (comprobado contra SingleStepTests):
+
+- El PC del marco de error de dirección depende de hasta dónde llegó la instrucción. Las reglas están en `ea.c` y
+  en MOVE (`ops_move.c`).
+- MOVE.W a `-(An)` apila en IR la palabra siguiente a la instrucción. MOVE.L que falla al escribir deja N y Z a
+  medias según el modo. CHK pone Z si Dn es 0 y borra V y C.
+- `LINK A7` guarda el SP de antes del push. `DBcc` no escribe el contador si el salto falla. `JSR` no apila si el
+  destino es impar; `BSR` sí, y apila el destino como PC.
+- `TRAP` con la traza puesta no saca la traza dentro de la prueba: queda pendiente.
+
+Resultado de `make sst` para la lista de R2a: los 53 ficheros pasan 2500 de 2500, y con los ciclos exactos también
+2500 de 2500. Son MOVE.b, MOVE.w, MOVE.l, MOVE.q, MOVEA.w, MOVEA.l, MOVEM.w, MOVEM.l, MOVEP.w, MOVEP.l, LEA, PEA,
+EXG, SWAP, LINK, UNLINK, MOVEfromSR, MOVEtoSR, MOVEtoCCR, MOVEfromUSP, MOVEtoUSP, ANDItoCCR, ANDItoSR, ORItoCCR,
+ORItoSR, EORItoCCR, EORItoSR, CLR.b/w/l, TST.b/w/l, EXT.w/l, Bcc, BSR, DBcc, Scc, JMP, JSR, RTS, RTR, RTE, TRAP,
+TRAPV, CHK, NOP, ILLEGAL_LINEA, ILLEGAL_LINEF, TAS, STOP y RESET. En total 132 500 de 317 500; el resto es R2b y
+R2c.
+
+Comprobado: `make test` (35 pruebas) y `make sst` con gcc 16 y clang 23, también con ASan y UBSan.
+
+Para R2b y R2c:
+
+- Cada uno tiene ya su fichero y su entrada en la tabla: R2b `src/interp/ops_arith.c` (`ops_arith_init`), R2c
+  `src/interp/ops_bits.c` (`ops_bits_init`). No hace falta tocar `table.c` ni `interp.h`. Si queréis más ficheros,
+  el Makefile los coge solos; los llamáis desde vuestro `_init` con una cabecera propia.
+- Se registra con `table_fill(tb, base, bits_libres, clase_EA, manejador)`. Las clases (`EA_DATA_ALT`...) están
+  en `interp.h`. La prueba `table_no_conflicts` falla si dos grupos dan el mismo código.
+- Para leer y escribir operandos: `ea_decode_op` + `ea_read` + `ea_write` (lectura, cambio, escritura). Los errores
+  de dirección y su PC salen solos en los casos vistos. Banderas: `set_nz`, `set_ccr_bits`. Ciclos: `cycles(c, n)`
+  con lo que el manual da de más sobre 4 por palabra y por acceso.
+
+Falta:
+
+- R2b y R2c.
+- Marcos de grupo 0 y RTE del 68010 en adelante (R3). En el 68020+ los datos impares no fallan, pero el marco de
+  instrucción impar es aún el del 68000.
+- Interrupciones solo con autovector (sin ciclo IACK del anfitrión ni interrupción espuria).
+- El presupuesto de `relevo_run` sigue contando instrucciones; los ciclos ya están para usarlos.

@@ -67,6 +67,8 @@ relevo_cpu *relevo_create(const relevo_config *cfg)
     atomic_init(&c->ipl, 0);
     atomic_init(&c->stop_request, false);
 
+    c->align_check = c->model <= RELEVO_68010;
+
     if (cfg->memory_size != 0)
         relevo_map(c, 0, cfg->memory_size, RELEVO_PAGE_RAM);
 
@@ -135,58 +137,48 @@ void relevo_reset(relevo_cpu *c)
     c->r.vbr = 0;
     c->r.cacr = 0;
     c->stopped = false;
+    c->halted = false;
+    c->trace_pending = false;
+    c->in_group0 = false;
     c->r.isp = mem_read32(c, 0);
     c->r.a[7] = c->r.isp;
     c->r.pc = mem_read32(c, 4);
 }
 
-void cpu_push16(relevo_cpu *c, uint32_t v)
+static inline bool between_needed(relevo_cpu *c)
 {
-    c->r.a[7] -= 2;
-    mem_write16(c, c->r.a[7], v);
+    unsigned ipl = atomic_load_explicit(&c->ipl, memory_order_relaxed);
+    return c->trace_pending || c->stopped || ipl != c->prev_ipl
+        || ipl > (c->r.sr & RELEVO_SR_IPL) >> 8u;
 }
 
-void cpu_push32(relevo_cpu *c, uint32_t v)
+static relevo_status run_loop(relevo_cpu *c)
 {
-    c->r.a[7] -= 4;
-    mem_write32(c, c->r.a[7], v);
-}
-
-/* Group 1 and 2 exceptions with a short frame: the 68000 frame (PC, SR) or
- * the 68010+ format 0 frame (PC, SR, format/vector word). `pc` is the value
- * stacked as the return address.
- * TODO(R2): group 0 frames, interrupts (M bit), trace, double faults. */
-void cpu_exception(relevo_cpu *c, unsigned vector, uint32_t pc)
-{
-    uint16_t old_sr = c->r.sr;
-    cpu_set_sr(c, (uint16_t)((old_sr | RELEVO_SR_S)
-                             & ~(RELEVO_SR_T1 | RELEVO_SR_T0)));
-    if (c->model != RELEVO_68000)
-        cpu_push16(c, (vector * 4) & 0x0FFF);  /* format 0 */
-    cpu_push32(c, pc);
-    cpu_push16(c, old_sr);
-    uint32_t vbr = c->model == RELEVO_68000 ? 0 : c->r.vbr;
-    c->r.pc = mem_read32(c, vbr + vector * 4);
-}
-
-relevo_status relevo_run(relevo_cpu *c, uint64_t budget)
-{
-    if (c->stopped)
-        return RELEVO_STOPPED;  /* TODO(R2): wake up on an interrupt */
-    c->exiting = false;
-    for (; budget != 0; budget--) {
+    while (c->budget != 0) {
         if (UNLIKELY(atomic_load_explicit(&c->stop_request,
                                           memory_order_relaxed))) {
             atomic_store_explicit(&c->stop_request, false,
                                   memory_order_relaxed);
             return RELEVO_HOST_STOP;
         }
-        /* TODO(R2): interrupts, trace */
-        c->insn_pc = c->r.pc;
-        uint16_t op = (uint16_t)mem_read16(c, c->r.pc);
-        c->r.pc += 2;
+        if (UNLIKELY(between_needed(c)) && !cpu_between_insns(c))
+            return RELEVO_STOPPED;
+
+        uint32_t pc = c->r.pc;
+        c->insn_pc = pc;
+        c->trace_pending = (c->r.sr & RELEVO_SR_T1) != 0;
+        c->ae_pc = pc + 2;
+        c->fault_cycles = 0;
+        c->in_insn = true;
+        if (UNLIKELY(pc & 1))
+            cpu_address_error(c, pc, ACC_PROG | ACC_READ);
+        uint16_t op = (uint16_t)cpu_read16(c, pc, ACC_PROG);
+        c->ir = op;
+        c->r.pc = pc + 2;
         c->table[op](c, op);
+        c->in_insn = false;
         c->count++;
+        c->budget--;
         if (UNLIKELY(c->exiting))
             return c->exit;
         if (UNLIKELY(c->r.pc == 0 && (c->options & RELEVO_OPT_EXIT_ON_PC_ZERO)))
@@ -195,9 +187,38 @@ relevo_status relevo_run(relevo_cpu *c, uint64_t budget)
     return RELEVO_BUDGET;
 }
 
+relevo_status relevo_run(relevo_cpu *c, uint64_t budget)
+{
+    if (c->halted)
+        return RELEVO_HALTED;
+    c->budget = budget;
+    c->exiting = false;
+    c->running = true;
+    if (setjmp(c->fault_jmp) != 0) {
+        /* A group 0 exception ended the instruction (see exception.c). */
+        if (c->in_insn) {
+            c->in_insn = false;
+            c->count++;
+            c->budget--;
+        }
+        if (c->halted) {
+            c->running = false;
+            return RELEVO_HALTED;
+        }
+    }
+    relevo_status st = run_loop(c);
+    c->running = false;
+    return st;
+}
+
 uint64_t relevo_instructions(const relevo_cpu *c)
 {
     return c->count;
+}
+
+uint64_t relevo_cycles(const relevo_cpu *c)
+{
+    return c->cycles;
 }
 
 void relevo_set_ipl(relevo_cpu *c, unsigned level)

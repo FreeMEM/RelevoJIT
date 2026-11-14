@@ -22,7 +22,7 @@ static uint32_t read_in_page(relevo_cpu *c, uint32_t addr, unsigned size)
         }
         return 0;
     default:
-        /* TODO(R2): bus error */
+        /* Unmapped: the CPU's own accesses never get here (bus error). */
         return 0;
     }
 }
@@ -42,7 +42,6 @@ static void write_in_page(relevo_cpu *c, uint32_t addr, uint32_t v,
     case RELEVO_PAGE_ROM:
         return;
     default:
-        /* TODO(R2): bus error */
         return;
     }
 }
@@ -69,4 +68,30 @@ void mem_write_slow(relevo_cpu *c, uint32_t addr, uint32_t v, unsigned size)
     for (unsigned i = 0; i < size; i++)
         write_in_page(c, (addr + i) & c->addr_mask,
                       (v >> (8 * (size - 1 - i))) & 0xFF, 1);
+}
+
+/* The CPU's own accesses (see cpu.h): an unmapped page is a bus error.
+ * `addr` is unmasked; the alignment check is already done. */
+static void check_mapped(relevo_cpu *c, uint32_t addr, unsigned size,
+                         unsigned acc)
+{
+    for (unsigned i = 0; i < size; i++) {
+        uint32_t a = (addr + i) & c->addr_mask;
+        if (c->pages[a >> RELEVO_PAGE_SHIFT] == RELEVO_PAGE_NONE)
+            cpu_bus_error(c, addr, acc);
+    }
+}
+
+uint32_t cpu_read_slow(relevo_cpu *c, uint32_t addr, unsigned size,
+                       unsigned acc)
+{
+    check_mapped(c, addr, size, acc | ACC_READ);
+    return mem_read_slow(c, addr & c->addr_mask, size);
+}
+
+void cpu_write_slow(relevo_cpu *c, uint32_t addr, uint32_t v, unsigned size,
+                    unsigned acc)
+{
+    check_mapped(c, addr, size, acc | ACC_WRITE);
+    mem_write_slow(c, addr & c->addr_mask, v, size);
 }

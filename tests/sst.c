@@ -2,12 +2,16 @@
  *
  * SingleStepTests/m68000 runner.
  *
- *   sst [-v N] FILE.json...
+ *   sst [-v N] [-c N] FILE.json...
  *
  * Runs every test in each file and prints passed/total per file (one file
  * per instruction group) and a total. -v N prints the first N failures of
  * each file. Exits with 1 if any test failed. Get the files with
  * tools/datos.sh.
+ *
+ * Cycle counts are compared apart and do not make a test fail: the "cyc"
+ * column counts the tests that pass and also take the expected number of
+ * cycles. -c N prints the first N of those that pass with other cycles.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,14 +32,19 @@ static const char *base_name(const char *path, char *buf, size_t size)
 
 int main(int argc, char **argv)
 {
-    long verbose = 0;
+    long verbose = 0, verbose_cycles = 0;
     int first = 1;
-    if (argc > 2 && strcmp(argv[1], "-v") == 0) {
-        verbose = strtol(argv[2], NULL, 10);
-        first = 3;
+    while (first + 1 < argc && argv[first][0] == '-') {
+        if (strcmp(argv[first], "-v") == 0)
+            verbose = strtol(argv[first + 1], NULL, 10);
+        else if (strcmp(argv[first], "-c") == 0)
+            verbose_cycles = strtol(argv[first + 1], NULL, 10);
+        else
+            break;
+        first += 2;
     }
-    if (first >= argc) {
-        fprintf(stderr, "usage: sst [-v N] FILE.json...\n");
+    if (first >= argc || argv[first][0] == '-') {
+        fprintf(stderr, "usage: sst [-v N] [-c N] FILE.json...\n");
         return 2;
     }
 
@@ -47,6 +56,7 @@ int main(int argc, char **argv)
     sst_test t;
     memset(&t, 0, sizeof t);
     unsigned long total = 0, passed = 0, files_ok = 0, files = 0;
+    unsigned long timed_total = 0;
     int status = 0;
 
     for (int i = first; i < argc; i++) {
@@ -57,14 +67,22 @@ int main(int argc, char **argv)
             status = 2;
             continue;
         }
-        unsigned long n = 0, ok = 0;
-        long shown = 0;
+        sst_env_clear(&env);
+        unsigned long n = 0, ok = 0, timed = 0;
+        long shown = 0, shown_cycles = 0;
         int res;
         while ((res = sst_next(&rd, &t)) == 1) {
             char why[512];
             n++;
             if (sst_run_one(&env, &t, why, sizeof why)) {
                 ok++;
+                if (env.cycles == t.cycles) {
+                    timed++;
+                } else if (shown_cycles < verbose_cycles) {
+                    printf("  CYCLES %s: %u (want %u)\n", t.name, env.cycles,
+                           (unsigned)t.cycles);
+                    shown_cycles++;
+                }
             } else if (shown < verbose) {
                 printf("  FAIL %s: %s\n", t.name, why);
                 shown++;
@@ -76,15 +94,17 @@ int main(int argc, char **argv)
             status = 2;
         }
         sst_close(&rd);
-        printf("%-16s %5lu/%5lu%s\n", name, ok, n, ok == n ? "" : "  FAIL");
+        printf("%-16s %5lu/%5lu  cyc %5lu%s\n", name, ok, n, timed,
+               ok == n ? "" : "  FAIL");
         total += n;
         passed += ok;
+        timed_total += timed;
         files++;
         files_ok += ok == n && n > 0;
     }
 
-    printf("total: %lu/%lu tests, %lu/%lu files\n", passed, total, files_ok,
-           files);
+    printf("total: %lu/%lu tests, %lu/%lu files; cycles right in %lu\n",
+           passed, total, files_ok, files, timed_total);
     sst_test_free(&t);
     sst_env_free(&env);
     if (status == 0 && passed != total)
