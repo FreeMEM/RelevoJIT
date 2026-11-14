@@ -114,6 +114,13 @@ struct relevo_cpu {
     unsigned prev_ipl;          /* level 7 is edge triggered */
     atomic_bool stop_request;
 
+    /* JIT engine (NULL with the interpreter). `attention` is set by
+     * relevo_set_ipl() and relevo_request_stop(): a block that loops on
+     * itself leaves when it sees it. */
+    relevo_engine engine;
+    struct jit_state *jit;
+    atomic_uint attention;
+
     uint8_t pages[RELEVO_PAGE_COUNT];   /* relevo_page_kind per page */
     relevo_handler *table;              /* 65 536 handlers */
 };
@@ -322,6 +329,18 @@ void cpu_exception_group1(relevo_cpu *cpu, unsigned vector);
 /* Between instructions: a pending trace, then interrupts. Returns false if
  * the CPU stays stopped. */
 bool cpu_between_insns(relevo_cpu *cpu);
+
+/* Whether cpu_between_insns() has anything to do. */
+static inline bool cpu_between_needed(relevo_cpu *c)
+{
+    unsigned ipl = atomic_load_explicit(&c->ipl, memory_order_relaxed);
+    return c->trace_pending || c->stopped || ipl != c->prev_ipl
+        || ipl > (c->r.sr & RELEVO_SR_IPL) >> 8u;
+}
+
+/* cpu.c: runs one instruction in the interpreter (the checks between
+ * instructions are the caller's), counting it against the budget. */
+void cpu_interp_step(relevo_cpu *cpu);
 
 /* interp/table.c: fills the table; returns how many opcodes two groups
  * claimed (0 unless there is a bug). */

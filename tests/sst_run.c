@@ -11,11 +11,17 @@
 
 bool sst_env_init(sst_env *env)
 {
+    return sst_env_init_engine(env, RELEVO_ENGINE_INTERP);
+}
+
+bool sst_env_init_engine(sst_env *env, relevo_engine engine)
+{
     env->mem = calloc(1, MEM_SIZE);
     if (env->mem == NULL)
         return false;
     relevo_config cfg = {0};
     cfg.model = RELEVO_68000;
+    cfg.engine = engine;
     cfg.memory = env->mem;
     cfg.memory_size = MEM_SIZE;
     env->cpu = relevo_create(&cfg);

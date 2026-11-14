@@ -65,6 +65,16 @@
     X(move16)                   \
     X(cinv_cpush)               \
     X(cacr)                     \
+    X(jit_engine_available)     \
+    X(jit_loop)                 \
+    X(jit_budget)               \
+    X(jit_code_change)          \
+    X(jit_invalidate_rom)       \
+    X(jit_self_modifying)       \
+    X(jit_host_page)            \
+    X(jit_address_error)        \
+    X(jit_interrupt)            \
+    X(jit_calls)                \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

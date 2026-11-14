@@ -2,7 +2,7 @@
  *
  * The bench against the oracle, RelevoJIT's side (see tools/oraculo/oraculo.py).
  *
- *   oraculo [-v N] [-o DIR] tests/oraculo/NAME.MODEL.txt...
+ *   oraculo [-j] [-v N] [-o DIR] tests/oraculo/NAME.MODEL.txt...
  *   oraculo -d MODEL NAME.bin
  *
  * For each file, runs tests/oraculo/NAME.bin at $140000 on a MODEL
@@ -11,7 +11,7 @@
  * digit; a line "NNNN x" is a case not compared). Prints passed/total per file and the failing cases per
  * instruction; -v N shows the first N failing lines in full. -o DIR also
  * writes RelevoJIT's lines to DIR/NAME.MODEL.txt. Exits with 1 if any case
- * differs. -d prints every record of a program, without comparing (what
+ * differs. -j runs the programs on the JIT engine. -d prints every record of a program, without comparing (what
  * tools/oraculo/oraculo.py relevo uses).
  */
 #include <stdbool.h>
@@ -31,6 +31,7 @@
 #define RET_SP      0x17FF00u
 
 static uint8_t mem[MEM_SIZE];
+static relevo_engine engine = RELEVO_ENGINE_INTERP;
 
 static uint32_t get32(uint32_t a)
 {
@@ -152,6 +153,7 @@ static long run_program(const char *bin, relevo_model model)
     cfg.memory = mem;
     cfg.memory_size = MEM_SIZE;
     cfg.options = RELEVO_OPT_EXIT_ON_PC_ZERO;
+    cfg.engine = engine;
     relevo_cpu *c = relevo_create(&cfg);
     if (c == NULL) {
         fprintf(stderr, "cannot create the CPU\n");
@@ -289,6 +291,11 @@ int main(int argc, char **argv)
     const char *outdir = NULL;
     int i = 1;
     while (i + 1 < argc && argv[i][0] == '-') {
+        if (strcmp(argv[i], "-j") == 0) {
+            engine = RELEVO_ENGINE_JIT;
+            i++;
+            continue;
+        }
         if (strcmp(argv[i], "-v") == 0)
             verbose = strtol(argv[i + 1], NULL, 10);
         else if (strcmp(argv[i], "-o") == 0)
@@ -297,13 +304,13 @@ int main(int argc, char **argv)
             break;
         i += 2;
     }
-    if (argc == 4 && strcmp(argv[1], "-d") == 0) {
+    if (argc - i == 3 && strcmp(argv[i], "-d") == 0) {
         relevo_model model;
-        if (!parse_model(argv[2], &model)) {
-            fprintf(stderr, "unknown model %s\n", argv[2]);
+        if (!parse_model(argv[i + 1], &model)) {
+            fprintf(stderr, "unknown model %s\n", argv[i + 1]);
             return 2;
         }
-        long records = run_program(argv[3], model);
+        long records = run_program(argv[i + 2], model);
         char got[512];
         for (long k = 0; k < records; k++) {
             format_record(got, sizeof got, (unsigned)k,
@@ -313,7 +320,7 @@ int main(int argc, char **argv)
         return records < 0;
     }
     if (i >= argc) {
-        fprintf(stderr, "usage: oraculo [-v N] [-o DIR] NAME.MODEL.txt...\n");
+        fprintf(stderr, "usage: oraculo [-j] [-v N] [-o DIR] NAME.MODEL.txt...\n");
         return 2;
     }
     int status = 0;

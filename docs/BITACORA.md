@@ -31,7 +31,7 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
 - [ ] R5 **Banco diferencial.** Los programas de `dashos/jit-host/pruebas68k` en RelevoJIT, en Emu68
   (`qemu-aarch64_be`) y en FS-UAE con el Kickstart real; las salidas, iguales.
 - [~] R6 **JIT x86-64.** En partes:
-  - [ ] R6a: la base. Emisor x86-64, bloques y caché de traducciones, registros del 68k en memoria con asignador por
+  - [x] R6a (2026-11-14): la base. Emisor x86-64, bloques y caché de traducciones, registros del 68k en memoria con asignador por
     bloque, memoria con `MOVBE` (o `BSWAP`), banderas solo cuando alguien las lee, salida al bucle con
     interrupciones. Las instrucciones que no traduce caen al intérprete (una a una, dentro del bloque o cortándolo).
     Traduce de verdad un primer grupo: `MOVE`, `MOVEQ`, `LEA`, `ADD`, `SUB`, `CMP`, `AND`, `OR`, `EOR`, `TST`, `Bcc`,
@@ -348,3 +348,99 @@ Ficheros comunes tocados: `src/exception.c` (marcos), `src/interp/interp.h` (una
 `src/interp/ops_muldiv.c` y `ops_020.c`/`ops_020.h` (banderas del oráculo), `src/cpu.h` y `src/memory.c` (tamaño del
 acceso que falla), `include/relevo.h` (registros de la MMU), `Makefile`, `tests/tests.h`, `tests/test_020.c`
 (pruebas de R3b con las banderas nuevas).
+
+### 2026-11-14 — R6a
+
+Hecho:
+
+- Motor JIT (`RELEVO_ENGINE_JIT`), en `src/jit/`. `relevo_create()` lo acepta en x86-64; en otra CPU devuelve NULL.
+  Sin estado global: cada CPU tiene su memoria de código, su caché y su trampolín.
+- `codemem.c`: memoria ejecutable con W^X. En Linux, la misma memoria (un memfd) mapeada dos veces, RW para escribir
+  y RX para ejecutar; si no se puede, un solo mapeo que pasa de RX a RW con `mprotect` mientras se escribe. Para
+  otros sistemas hay que dar esas cuatro funciones (Windows: `VirtualAlloc`); el trampolín ya sabe la convención de
+  llamada de Microsoft x64.
+- `decode.c`: decodificador propio del JIT. Solo acepta lo que traduce, y nada que la tabla del intérprete dé por
+  ilegal en ese modelo. Los accesos a direcciones fijas (absolutas, relativas al PC) se comprueban al traducir.
+- `x86_64/emit.h`: emisor x86-64 propio (REX, ModRM, SIB, `MOVBE`, saltos con parches).
+- `x86_64/translate.c`: RBX apunta a la CPU, R15 a la memoria 68k, R14 lleva SR. Nueve registros de x86 (RSI, RDI,
+  RBP, R8-R13) para los del 68k, por orden de uso; el bloque se corta antes de necesitar un décimo. Se cargan al
+  entrar y se guardan los cambiados al salir.
+- Memoria: `[R15 + dirección]` con `MOVBE` si la CPU lo tiene (CPUID), si no `BSWAP`, `ROL` y `XCHG CL,CH` (que no
+  tocan las banderas al escribir). Antes de cada acceso, en este orden: dirección impar en 68000/010, tipo de página
+  (RAM, o ROM para leer), que no cruce de página y, al escribir, que no caiga en el código del propio bloque.
+- Cada instrucción se emite en dos fases: direcciones y comprobaciones, y luego los efectos. Si una comprobación
+  falla, el bloque sale con el estado de antes de esa instrucción ("bail") y el intérprete la ejecuta. Así los errores
+  de dirección y de bus, las páginas del anfitrión y los marcos del 68000 salen del intérprete, iguales. Los bloques
+  nunca llaman a C ni hacen `longjmp`.
+- Banderas: N, Z, V y C de SF, ZF, OF y CF; X es C cuando toca. Análisis hacia atrás en el bloque: solo se guardan en
+  R14 las que alguien lee después (otra instrucción, la salida del bloque o una instrucción que puede salir al
+  intérprete). Las condiciones se evalúan con una tabla de 16 bits y `BT`.
+- Bloque: hasta un salto o rama, una instrucción no traducida (el bloque se corta; esa la hace el intérprete), 64
+  instrucciones, el presupuesto o el décimo registro. Un bloque que acaba en una rama a su propio inicio da la
+  vuelta dentro de él mientras quede presupuesto y nadie pida atención (`relevo_set_ipl`, `relevo_request_stop`).
+- Caché (`jit.c`): por dirección 68k, con un resumen (hash de 64 bits) del código, que se mira cada vez que se entra
+  en el bloque, salvo si todo está en ROM. Las direcciones que no se traducen también se guardan, para no
+  decodificarlas cada vez. `relevo_invalidate()` quita lo que toque el rango; `relevo_map()` lo vacía todo. Si se
+  llena la memoria de código, se vacía todo.
+- El bucle entre bloques hace lo mismo que el del intérprete: traza, interrupciones, `STOP`, petición de parada,
+  presupuesto exacto y salida por PC 0. Con T1 puesto, todo va al intérprete. Al salir de un bloque deja en IR el
+  último código de operación (el marco de un error al leer el siguiente lo lleva).
+- Traduce `MOVE`, `MOVEA`, `MOVEQ`, `LEA`, `ADD`, `ADDA`, `ADDQ`, `SUB`, `SUBA`, `SUBQ`, `CMP`, `CMPA`, `AND`, `OR`,
+  `EOR`, `ADDI`, `SUBI`, `CMPI`, `ANDI`, `ORI`, `EORI`, `TST`, `CLR`, `Bcc`, `BRA`, `BSR`, `DBcc`, `JSR`, `JMP`,
+  `RTS` y `NOP`, con todos los modos de dirección del 68000. Del 020: la escala del índice y `Bcc.L`; la palabra de
+  extensión completa va al intérprete.
+- `cpu.c`: el paso del intérprete sale a `cpu_interp_step()`, que usan los dos bucles. Ciclos con el JIT: una
+  estimación (4 por palabra y por acceso).
+
+Pruebas nuevas:
+
+- `build/jitdiff` (`tests/jitdiff.c`): diferencial contra el intérprete. Instrucciones al azar (las que se traducen,
+  con operandos al azar, y algunas que no), registros, banderas y datos al azar, páginas de ROM, del anfitrión y vacías,
+  direcciones impares, modo usuario, traza. Compara registros, SR, PC, instrucciones contadas, estado de salida, los
+  accesos al anfitrión y la memoria (ventanas en cada caso, los 16 MB cada 256). `-k 1` instrucción a instrucción;
+  `-k N` bloques de hasta N; `-x` con `BSWAP` en vez de `MOVBE`.
+- `make test` corre además `build/oraculo -j`, `jitdiff` (68000 y 68020, con `MOVBE` y con `BSWAP`) y la NOP de
+  SingleStepTests con `-j`. `make sst JIT=1` corre SingleStepTests con el JIT. `make jitdiff` es la tanda larga.
+- 10 pruebas unitarias (`tests/test_jit.c`): bucle en un bloque, presupuesto exacto, código que cambia, ROM con
+  `relevo_invalidate`, código que se cambia a sí mismo dentro del bloque, página del anfitrión dentro de un bloque,
+  error de dirección, interrupción y parada, llamadas.
+
+Comprobado:
+
+- `make test` (76 pruebas, el oráculo con los dos motores, `jitdiff`) con gcc 16 y clang 23, también con ASan y UBSan.
+  `make sst`: 317 500 de 317 500 con el intérprete (ciclos incluidos) y con el JIT.
+- `make jitdiff`: 1,8 millones de casos (68000, 68010, 68020 y 68040), todos iguales. Antes, otros 3,9 millones con
+  tres semillas.
+- El camino de `mprotect` (sin memfd), a mano: pruebas y `jitdiff` iguales.
+- Lo que encontró `jitdiff` y se arregló: IR viejo en el marco del 68000 tras un bloque, y código que se escribe a sí
+  mismo dentro del bloque.
+
+Velocidad (`make bench`, gcc -O2, millones de instrucciones 68k por segundo, 68020):
+
+| Programa | Intérprete | JIT | |
+|---|---|---|---|
+| Bucle aritmético (`ADD`, `EOR`, `SUBQ`, `BNE`) | 124 | 1963 | 16x |
+| Copia de memoria (`MOVE.L (A0)+,(A1)+`, `DBRA`) | 118 | 894 | 7,6x |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 134 | 292 | 2,2x |
+
+El último sale al bucle en cada rama: ahí está la ganancia del encadenado (R6b).
+
+Para R6b:
+
+- El resto de instrucciones enteras (`MOVEM`, desplazamientos, bits, `EXT`, `SWAP`, `Scc`, `NEG`, `NOT`, `ADDX`,
+  `SUBX`, `MULx`, `DIVx`, `LINK`, `UNLK`, `PEA`, `EXG`...) y la palabra de extensión completa del 020.
+- Encadenado de bloques (hoy solo la vuelta al propio inicio), con la misma mirada a `attention` y al presupuesto.
+- Invalidación por escritura en código: hoy hay hash al entrar y la comprobación del propio bloque; falta evitar el
+  hash en cada entrada (marcar páginas con código y comprobarlas al escribir).
+- Banderas: dejarlas en EFLAGS entre instrucciones y juntar `CMP` + `Bcc`; la conversión a CCR es larga.
+- Accesos al anfitrión desde el bloque (una llamada) en vez de salir al intérprete; comprobación de página más
+  barata (o quitarla cuando el anfitrión dé fallo de página, S18).
+- Las interrupciones se atienden entre bloques (hasta 64 instrucciones tarde, o una vuelta del bucle interno).
+- Falta `codemem` para Windows.
+
+Ficheros comunes tocados: `Makefile` (fuentes de `src/jit/`, `jitdiff`, `bench`, objetivos nuevos), `include/relevo.h`
+(comentarios del motor JIT, de los ciclos y de `relevo_run`), `src/cpu.h` (campos `engine`, `jit`, `attention`;
+`cpu_between_needed()` y `cpu_interp_step()`), `src/cpu.c` (el paso del intérprete aparte, crear y destruir el JIT,
+`relevo_map`, `relevo_invalidate`, `attention`), `tests/tests.h`, `tests/test_api.c` (la prueba que esperaba que
+no hubiera JIT), `tests/sst.c`, `tests/sst_run.c` y `.h` (`-j`), `tests/oraculo.c` (`-j`) y `README.md`. No se
+tocaron `interp.h`, `table.c` ni `exception.c`.

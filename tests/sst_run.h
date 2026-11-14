@@ -18,6 +18,8 @@ typedef struct sst_env {
 } sst_env;
 
 bool sst_env_init(sst_env *env);
+/* The same with the given engine (false if it cannot be created). */
+bool sst_env_init_engine(sst_env *env, relevo_engine engine);
 /* Zeroes the whole memory (between files). */
 void sst_env_clear(sst_env *env);
 void sst_env_free(sst_env *env);

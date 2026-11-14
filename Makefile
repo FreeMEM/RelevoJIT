@@ -1,9 +1,12 @@
 # RelevoJIT
 #
 #   make                build/librelevo.a and build/sst
-#   make test           unit tests (and the NOP SingleStepTests, if downloaded)
+#   make test           unit tests, the oracle bench and the JIT against the
+#                       interpreter (and the NOP SingleStepTests, if downloaded)
 #   make data           download SingleStepTests/m68000 (tools/datos.sh)
-#   make sst            run every SingleStepTests file
+#   make sst            run every SingleStepTests file (JIT=1: on the JIT)
+#   make jitdiff        a longer run of the JIT against the interpreter
+#   make bench          speed of the JIT against the interpreter
 #   make oraculo        regenerate the oracle bench (tools/oraculo: FS-UAE, Emu68)
 #   make CC=clang       any C11 compiler; objects are rebuilt when CC changes
 #   make clean
@@ -18,25 +21,33 @@ DEPFLAGS = -MMD -MP
 BUILD := build
 LIB := $(BUILD)/librelevo.a
 
-LIB_SRC := $(wildcard src/*.c src/interp/*.c)
+LIB_SRC := $(wildcard src/*.c src/interp/*.c src/jit/*.c src/jit/x86_64/*.c)
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
             tests/test_010.c tests/test_020.c tests/test_json.c tests/test_sst.c \
+            tests/test_jit.c \
             $(TEST_COMMON)
 SST_SRC := tests/sst.c $(TEST_COMMON)
 ORACLE_SRC := tests/oraculo.c
+JITDIFF_SRC := tests/jitdiff.c
+BENCH_SRC := tests/bench.c
 
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 UNIT_OBJ := $(UNIT_SRC:%.c=$(BUILD)/%.o)
 SST_OBJ := $(SST_SRC:%.c=$(BUILD)/%.o)
 ORACLE_OBJ := $(ORACLE_SRC:%.c=$(BUILD)/%.o)
+JITDIFF_OBJ := $(JITDIFF_SRC:%.c=$(BUILD)/%.o)
+BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
 ORACLE_DATA := $(wildcard tests/oraculo/*.txt)
 
 SST_DATA := tests/datos/m68000
 
-.PHONY: all test data sst oraculo clean FORCE
+# make sst JIT=1 runs SingleStepTests on the JIT engine.
+SST_FLAGS := $(if $(JIT),-j,)
 
-all: $(LIB) $(BUILD)/sst $(BUILD)/oraculo
+.PHONY: all test data sst oraculo jitdiff bench clean FORCE
+
+all: $(LIB) $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff $(BUILD)/bench
 
 # Rebuild everything when the compiler or its flags change.
 $(BUILD)/compiler: FORCE
@@ -61,15 +72,38 @@ $(BUILD)/sst: $(SST_OBJ) $(LIB)
 $(BUILD)/oraculo: $(ORACLE_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ORACLE_OBJ) $(LIB)
 
-test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo
+$(BUILD)/jitdiff: $(JITDIFF_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(JITDIFF_OBJ) $(LIB)
+
+$(BUILD)/bench: $(BENCH_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(BENCH_OBJ) $(LIB)
+
+test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/run_tests
 	$(BUILD)/oraculo $(ORACLE_DATA)
+	$(BUILD)/oraculo -j $(ORACLE_DATA)
+	$(BUILD)/jitdiff -m 68000 -n 20000 -k 1
+	$(BUILD)/jitdiff -m 68000 -n 20000 -k 12
+	$(BUILD)/jitdiff -m 68020 -n 20000 -k 12
+	$(BUILD)/jitdiff -m 68000 -n 5000 -k 12 -x
 	@if [ -f $(SST_DATA)/NOP.json ]; then \
 	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
 	    $(BUILD)/sst $(SST_DATA)/NOP.json; \
+	    $(BUILD)/sst -j $(SST_DATA)/NOP.json; \
 	else \
 	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
 	fi
+
+# Many more random cases, each model, both ways of swapping bytes.
+jitdiff: $(BUILD)/jitdiff
+	for m in 68000 68010 68020 68040; do \
+	    $(BUILD)/jitdiff -m $$m -n 200000 -k 1 || exit 1; \
+	    $(BUILD)/jitdiff -m $$m -n 200000 -k 16 || exit 1; \
+	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -x || exit 1; \
+	done
+
+bench: $(BUILD)/bench
+	$(BUILD)/bench
 
 data:
 	tools/datos.sh
@@ -77,7 +111,7 @@ data:
 # Fails while instructions are missing; the summary is what matters.
 sst: $(BUILD)/sst
 	@if [ ! -d $(SST_DATA) ]; then echo 'run make data first'; exit 1; fi
-	$(BUILD)/sst $(SST_DATA)/*.json
+	$(BUILD)/sst $(SST_FLAGS) $(SST_DATA)/*.json
 
 # The bench against the oracle: generates the programs, runs them in FS-UAE
 # with the real Kickstart as a 68020 and as a 68040 (DASH_KICKSTART) and
@@ -92,4 +126,5 @@ oraculo: $(BUILD)/oraculo
 clean:
 	rm -rf $(BUILD)
 
--include $(LIB_OBJ:.o=.d) $(UNIT_OBJ:.o=.d) $(SST_OBJ:.o=.d) $(ORACLE_OBJ:.o=.d)
+-include $(LIB_OBJ:.o=.d) $(UNIT_OBJ:.o=.d) $(SST_OBJ:.o=.d) $(ORACLE_OBJ:.o=.d) \
+         $(JITDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d)
