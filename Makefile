@@ -13,6 +13,9 @@
 #   make sst            run every SingleStepTests file (JIT=1: on the JIT)
 #   make jitdiff        a longer run of the JIT against the interpreter
 #   make bench          speed of the JIT against the interpreter
+#   make crdiff         the Rust library against the C one, random code on
+#                       every model (tests/crdiff.c; make c-crdiff: the C one
+#                       against itself, which checks the tool)
 #   make oraculo        regenerate the oracle bench (tools/oraculo: FS-UAE, Emu68)
 #   make c-test         any target with c- in front: the same on the C version
 #   make CC=clang       any C11 compiler; objects are rebuilt when CC changes
@@ -40,8 +43,13 @@ BUILD := build/$(IMPL)
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
 SST_SRC := tests/sst.c $(TEST_COMMON)
 ORACLE_SRC := tests/oraculo.c
-JITDIFF_SRC := tests/jitdiff.c
+JITDIFF_SRC := tests/jitdiff.c tests/gen68k.c
 BENCH_SRC := tests/bench.c
+CRDIFF_SRC := tests/crdiff.c tests/gen68k.c
+# The C library with every global symbol renamed c_<name>, to link with
+# either library in one program (crdiff).
+C_LIB := build/c/librelevo.a
+C_LIB_RENAMED := build/c/librelevo_c_.a
 ORACLE_DATA := $(wildcard tests/oraculo/*.txt)
 SST_DATA := tests/datos/m68000
 
@@ -63,7 +71,7 @@ LDLIBS += -lgcc_s -lutil -lrt -lpthread -ldl -lc
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
             tests/test_010.c tests/test_json.c tests/test_sst.c tests/test_jit.c \
             tests/skip_rust.c $(TEST_COMMON)
-EXTRA_TOOLS := $(BUILD)/abi
+EXTRA_TOOLS := $(BUILD)/abi $(BUILD)/crdiff
 # Only the 68000 so far (RR1)
 BENCH_FLAGS ?= -m 68000
 else
@@ -75,12 +83,13 @@ SST_OBJ := $(SST_SRC:%.c=$(BUILD)/%.o)
 ORACLE_OBJ := $(ORACLE_SRC:%.c=$(BUILD)/%.o)
 JITDIFF_OBJ := $(JITDIFF_SRC:%.c=$(BUILD)/%.o)
 BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
+CRDIFF_OBJ := $(CRDIFF_SRC:%.c=$(BUILD)/%.o)
 ABI_OBJ := $(BUILD)/tests/abi.o
 
 # make sst JIT=1 runs SingleStepTests on the JIT engine.
 SST_FLAGS := $(if $(JIT),-j,)
 
-.PHONY: all test data sst oraculo jitdiff bench clean FORCE
+.PHONY: all test data sst oraculo jitdiff crdiff bench clean FORCE
 
 all: $(LIB) $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff $(BUILD)/bench $(EXTRA_TOOLS)
 
@@ -122,6 +131,21 @@ $(BUILD)/bench: $(BENCH_OBJ) $(LIB)
 $(BUILD)/abi: $(ABI_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ABI_OBJ) $(LIB) $(LDLIBS)
 
+ifeq ($(IMPL),rust)
+# The C library, built as make c-... builds it.
+$(C_LIB): FORCE
+	$(MAKE) IMPL=c CC='$(CC)' CFLAGS='$(CFLAGS)' $(C_LIB)
+endif
+
+$(C_LIB_RENAMED): $(C_LIB)
+	nm -g --defined-only $< | awk 'NF == 3 { print $$3, "c_" $$3 }' \
+	    | sort -u > $@.syms
+	objcopy --redefine-syms=$@.syms $< $@
+
+$(BUILD)/crdiff: $(CRDIFF_OBJ) $(LIB) $(C_LIB_RENAMED)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(CRDIFF_OBJ) $(LIB) \
+	    $(C_LIB_RENAMED) $(LDLIBS)
+
 ifeq ($(IMPL),c)
 test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/run_tests
@@ -141,9 +165,10 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
 	fi
 else
-test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/abi
+test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/abi $(BUILD)/crdiff
 	$(BUILD)/abi
 	$(BUILD)/run_tests
+	$(BUILD)/crdiff -a -n 3000 -k 12
 	@echo 'SKIPPED: the oracle bench (68020 and 68040: RR2) and jitdiff (the JIT: RR3)'
 	@if [ -f $(SST_DATA)/NOP.json ]; then \
 	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
@@ -169,6 +194,13 @@ else
 jitdiff:
 	@echo 'SKIPPED: jitdiff needs the JIT (RR3); make c-jitdiff runs it on the C version'
 endif
+
+# The Rust library against the C one: many random cases on every model.
+crdiff: $(BUILD)/crdiff
+	$(BUILD)/crdiff -a -n 300000 -k 1
+	$(BUILD)/crdiff -a -n 200000 -k 16
+	$(BUILD)/crdiff -a -n 50000 -k 64
+	$(BUILD)/crdiff -a -n 50000 -k 16 -g 100
 
 bench: $(BUILD)/bench
 	$(BUILD)/bench $(BENCH_FLAGS)
@@ -200,4 +232,5 @@ clean:
 	$(CARGO) clean
 
 -include $(LIB_OBJ:.o=.d) $(UNIT_OBJ:.o=.d) $(SST_OBJ:.o=.d) $(ORACLE_OBJ:.o=.d) \
-         $(JITDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(ABI_OBJ:.o=.d)
+         $(JITDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(ABI_OBJ:.o=.d) \
+         $(CRDIFF_OBJ:.o=.d)
