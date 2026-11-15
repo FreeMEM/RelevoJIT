@@ -2,11 +2,18 @@
 //! System control: the status register and CCR, USP, STOP and RESET.
 
 use super::{EA_DATA, EA_DATA_ALT, EaKind, OpTable, SZ_W, reg0};
-use crate::cpu::{Cpu, Res, Status};
+use crate::cpu::{Cpu, Model, Res, Status};
 
 /// MOVE from SR: not privileged on the 68000, where it reads the operand
-/// first, like CLR. (Privileged from the 68010 on: RR2.)
+/// first, like CLR; privileged from the 68010 on.
 fn op_move_from_sr(c: &mut Cpu, op: u16) -> Res {
+    if c.model != Model::M68000 {
+        if !c.supervisor_or_trap()? {
+            return Ok(());
+        }
+        let mut e = c.ea_decode_op(op, SZ_W)?;
+        return c.ea_write(&mut e, u32::from(c.r.sr));
+    }
     let mut e = c.ea_decode_op(op, SZ_W)?;
     c.ea_read(&mut e)?;
     if e.kind == EaKind::DReg {

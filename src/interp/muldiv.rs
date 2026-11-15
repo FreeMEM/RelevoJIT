@@ -10,7 +10,7 @@
 //! in the manual) are those of the data.
 
 use super::{CCR_C, CCR_N, CCR_V, CCR_Z, EA_DATA, OpTable, SZ_L, SZ_W, reg9, sext};
-use crate::cpu::{Cpu, Res, VEC_ZERO_DIVIDE};
+use crate::cpu::{Cpu, Model, Res, VEC_ZERO_DIVIDE};
 
 // ---- Multiply ----------------------------------------------------------------
 
@@ -40,10 +40,26 @@ fn op_muls(c: &mut Cpu, op: u16) -> Res {
 // ---- Divide ------------------------------------------------------------------
 
 /// Division by zero: the trap, after 38 cycles plus the operand's. The
-/// 68000 clears C (the flags are undefined in the manuals; this is FS-UAE's,
-/// the bench's oracle). The other models come with RR2.
-fn divide_by_zero(c: &mut Cpu) -> Res {
-    c.set_ccr_bits(CCR_C, 0);
+/// flags (undefined in the manuals) are those of FS-UAE, the bench's oracle
+/// (tools/oraculo): the 68000 and 68010 clear C; the 68020 and 68030 set V
+/// and, for DIVU, N from the dividend's sign and Z the other way round, for
+/// DIVS Z alone; the 68040 and 68060 clear N, Z, V and C for DIVU and C for
+/// DIVS.
+fn divide_by_zero(c: &mut Cpu, dividend: u32, sign: bool) -> Res {
+    let nzvc = CCR_N | CCR_Z | CCR_V | CCR_C;
+    let (mask, f) = match c.model {
+        Model::M68020 | Model::M68030 => {
+            let f = if sign {
+                CCR_Z
+            } else {
+                CCR_V | if dividend >> 31 != 0 { CCR_N } else { CCR_Z }
+            };
+            (nzvc, f)
+        }
+        Model::M68040 | Model::M68060 if !sign => (nzvc, 0),
+        _ => (CCR_C, 0),
+    };
+    c.set_ccr_bits(mask, f);
     c.cycles(4);
     c.exception(VEC_ZERO_DIVIDE, c.r.pc)
 }
@@ -86,7 +102,7 @@ fn op_divu(c: &mut Cpu, op: u16) -> Res {
     let dn = reg9(op);
     let d = c.r.d[dn];
     if s == 0 {
-        return divide_by_zero(c);
+        return divide_by_zero(c, d, false);
     }
     if d >> 16 >= s {
         c.cycles(10 - 4);
@@ -104,7 +120,7 @@ fn op_divs(c: &mut Cpu, op: u16) -> Res {
     let dn = reg9(op);
     let d = c.r.d[dn];
     if s == 0 {
-        return divide_by_zero(c);
+        return divide_by_zero(c, d, true);
     }
     let dividend = d as i32;
     let divisor = sext(s, SZ_W) as i32;

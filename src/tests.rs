@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Tests through the C interface, as a host would use it: the 68000 parts
-//! of the C tests that tests/skip_rust.c skips because they also create
-//! later models, and a few checks of the crate's own.
+//! Tests through the C interface, as a host would use it, and a few checks
+//! of the crate's own. (The C tests in tests/ cover the rest.)
 //!
 //! Calling the C interface is `unsafe`; these tests are its only users
 //! inside the crate.
@@ -109,8 +108,20 @@ impl Drop for Machine {
 
 #[test]
 fn table_no_conflicts() {
-    let (_, conflicts) = crate::interp::build_table(Model::M68000);
-    assert_eq!(conflicts, 0);
+    use crate::cpu::Fpu;
+    for model in [
+        Model::M68000,
+        Model::M68010,
+        Model::M68020,
+        Model::M68030,
+        Model::M68040,
+        Model::M68060,
+    ] {
+        for fpu in [Fpu::None, Fpu::M68881, Fpu::M68882, Fpu::Internal] {
+            let (_, conflicts) = crate::interp::build_table(model, fpu);
+            assert_eq!(conflicts, 0, "{model:?} {fpu:?}");
+        }
+    }
 }
 
 #[test]
@@ -139,12 +150,20 @@ fn config_validation() {
         cfg.model = 99;
         assert!(relevo_create(&cfg).is_null());
 
-        // Not yet: the later models (RR2) and the JIT (RR3).
-        for model in 1..=5 {
+        // Every model, each FPU where it fits.
+        for (model, fpu) in [(1, 0), (2, 1), (3, 2), (4, 3), (5, 3), (5, 0)] {
             cfg.model = model;
-            assert!(relevo_create(&cfg).is_null());
+            cfg.fpu = fpu;
+            let c = relevo_create(&cfg);
+            assert!(!c.is_null());
+            relevo_destroy(c);
         }
+        cfg.model = 4;
+        cfg.fpu = 1; // a 68881 on a 68040
+        assert!(relevo_create(&cfg).is_null());
         cfg.model = 0;
+        cfg.fpu = 0;
+        // Not yet: the JIT (RR3).
         cfg.engine = 1;
         assert!(relevo_create(&cfg).is_null());
         cfg.engine = 0;

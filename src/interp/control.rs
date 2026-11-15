@@ -8,7 +8,8 @@ use super::{
 };
 use crate::capi::TrapResult;
 use crate::cpu::{
-    Cpu, Res, Status, VEC_CHK, VEC_ILLEGAL, VEC_LINE_A, VEC_LINE_F, VEC_TRAP, VEC_TRAPV,
+    ACC_DATA, Cpu, Model, Res, Status, VEC_CHK, VEC_FORMAT_ERROR, VEC_ILLEGAL, VEC_LINE_A,
+    VEC_LINE_F, VEC_TRAP, VEC_TRAPV,
 };
 
 pub fn op_illegal(c: &mut Cpu, _op: u16) -> Res {
@@ -42,13 +43,16 @@ fn op_nop(_c: &mut Cpu, _op: u16) -> Res {
 }
 
 /// Bcc, BRA, BSR: 8-bit displacement in the opcode, or 16 bits in the
-/// extension word when it is 0.
+/// extension word when it is 0 (32 bits when it is 0xFF, 68020 on).
 #[inline(always)]
 fn branch_target(c: &mut Cpu, op: u16) -> Res<u32> {
     let base = c.insn_pc.wrapping_add(2);
     let disp = u32::from(op & 0xFF);
     if disp == 0 {
         return Ok(base.wrapping_add(sext(c.fetch16()?, SZ_W)));
+    }
+    if disp == 0xFF && c.model >= Model::M68020 {
+        return Ok(base.wrapping_add(c.fetch32()?));
     }
     Ok(base.wrapping_add(sext(disp, SZ_B)))
 }
@@ -63,6 +67,9 @@ fn op_bcc(c: &mut Cpu, op: u16) -> Res {
     if op & 0xFF == 0 {
         c.r.pc = c.r.pc.wrapping_add(2);
         c.cycles(4); // the skipped word is still prefetched
+    } else if op & 0xFF == 0xFF && c.model >= Model::M68020 {
+        c.r.pc = c.r.pc.wrapping_add(4);
+        c.cycles(8);
     }
     Ok(())
 }
@@ -148,16 +155,62 @@ fn op_rtr(c: &mut Cpu, _op: u16) -> Res {
     c.jump(target, c.insn_pc.wrapping_add(2))
 }
 
-/// RTE on the 68000: the frame is SR and PC. (The 68010 and later read a
-/// format word: RR2.)
+/// Bytes of an exception frame of format `fmt` on model `m`, or 0 if RTE
+/// does not take that format there (a format error). MC68010 5.5,
+/// MC68020UM 6.4, MC68040UM 8.4, MC68060UM 8.5. (FS-UAE takes formats $4,
+/// $7, $8, $9, $A and $B on both the 68020 and the 68040, and not $3 on the
+/// 68040; RelevoJIT follows the manuals.)
+fn frame_bytes(m: Model, fmt: u32) -> u32 {
+    let m020_030 = m == Model::M68020 || m == Model::M68030;
+    match fmt {
+        0x0 => 8,
+        0x1 if m >= Model::M68020 && m <= Model::M68040 => 8,
+        0x2 if m >= Model::M68020 => 12,
+        0x3 if m >= Model::M68040 => 12,
+        0x4 if m >= Model::M68040 => 16,
+        0x7 if m == Model::M68040 => 60,
+        0x8 if m == Model::M68010 => 58,
+        0x9 if m020_030 => 20,
+        0xA if m020_030 => 32,
+        0xB if m020_030 => 92,
+        _ => 0,
+    }
+}
+
+/// RTE. On the 68000 the frame is SR and PC. From the 68010 on, the format
+/// word says how big the frame is; a format the model does not have is a
+/// format error, taken with the RTE's own address, after the first four
+/// words of the bad frame are popped (as FS-UAE, the bench's oracle). A
+/// format $1 (throwaway) frame only restores SR, which sets M again: RTE
+/// goes on with the frame on the master stack. Frames of faults (formats
+/// $7, $8, $A, $B) resume at their PC: RelevoJIT restarts the instruction
+/// there instead of finishing the faulted bus cycle.
 fn op_rte(c: &mut Cpu, _op: u16) -> Res {
     if !c.supervisor_or_trap()? {
         return Ok(());
     }
-    let sr = c.pop16()?;
-    let target = c.pop32()?;
-    c.set_sr(sr as u16);
-    c.jump(target, c.insn_pc.wrapping_add(2))
+    if c.model == Model::M68000 {
+        let sr = c.pop16()?;
+        let target = c.pop32()?;
+        c.set_sr(sr as u16);
+        return c.jump(target, c.insn_pc.wrapping_add(2));
+    }
+    loop {
+        let sp = c.r.a[7];
+        let sr = c.read16(sp, ACC_DATA)?;
+        let target = c.read32(sp.wrapping_add(2), ACC_DATA)?;
+        let fmt = c.read16(sp.wrapping_add(6), ACC_DATA)? >> 12;
+        let size = frame_bytes(c.model, fmt);
+        if size == 0 {
+            c.r.a[7] = sp.wrapping_add(8);
+            return c.exception_group1(VEC_FORMAT_ERROR);
+        }
+        c.r.a[7] = sp.wrapping_add(size);
+        c.set_sr(sr as u16);
+        if fmt != 1 {
+            return c.jump(target, c.insn_pc.wrapping_add(2));
+        }
+    }
 }
 
 fn op_trap(c: &mut Cpu, op: u16) -> Res {
@@ -176,6 +229,10 @@ fn op_chk(c: &mut Cpu, op: u16) -> Res {
     let mut e = c.ea_decode_op(op, SZ_W)?;
     let bound = sext(c.ea_read(&mut e)?, SZ_W) as i32;
     let v = sext(c.r.d[reg9(op)], SZ_W) as i32;
+    if c.model >= Model::M68020 {
+        c.cycles(6);
+        return c.chk_020(v, bound);
+    }
     let mut f = 0;
     if v == 0 {
         f |= CCR_Z;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Effective addresses of the 68000 (M68000PRM chapter 2).
+//! Effective addresses of the 68000 (M68000PRM chapter 2) and of the 68020
+//! (scaled index, full extension word, memory indirect: MC68020UM 2.2).
 //!
 //! What the 68000 does when an access faults is not in the manuals; the
 //! rules here come from the SingleStepTests/m68000 data:
@@ -13,11 +14,9 @@
 //!   operand's extension words, except for (xxx).W and (xxx).L (after
 //!   them) and for -(An) on bytes and words (2 more). Writes that come after
 //!   the next prefetch (MOVE, MOVEM) set their own value in `Ea::ae_pc`.
-//!
-//! The 68020's scaled index and full extension word come with it (RR2).
 
 use super::{SZ_B, SZ_L, SZ_W, sext, sz_mask};
-use crate::cpu::{ACC_DATA, ACC_PROG, Cpu, Res};
+use crate::cpu::{ACC_DATA, ACC_PROG, Cpu, Fault, Model, Res, VEC_ILLEGAL};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EaKind {
@@ -58,26 +57,89 @@ impl Ea {
 
 impl Cpu {
     /// The index register of an extension word: Dn or An, its low word sign
-    /// extended or all of it.
+    /// extended or all of it, times the scale (68020 on).
     #[inline(always)]
-    fn index_value(&self, ext: u32) -> u32 {
+    fn index_value(&self, ext: u32, scaled: bool) -> u32 {
         let xn = ((ext >> 12) & 7) as usize;
         let x = if ext & 0x8000 != 0 {
             self.r.a[xn]
         } else {
             self.r.d[xn]
         };
-        if ext & 0x0800 == 0 { sext(x, SZ_W) } else { x }
+        let x = if ext & 0x0800 == 0 { sext(x, SZ_W) } else { x };
+        if scaled { x << ((ext >> 9) & 3) } else { x }
     }
 
-    /// (d8,An,Xn) and (d8,PC,Xn): the brief extension word. The 68000
-    /// ignores bits 10-8. The addition takes 2 cycles more.
+    /// An encoding the CPU does not accept, found while decoding an operand:
+    /// the illegal instruction exception, and the instruction ends here.
+    #[cold]
+    pub fn ea_illegal<T>(&mut self) -> Res<T> {
+        self.exception_group1(VEC_ILLEGAL)?;
+        Err(Fault)
+    }
+
+    /// The 68020's full extension word (MC68020UM 2.2): base and index
+    /// suppress (bits 7 and 6), base displacement size (bits 5-4: 01 none,
+    /// 10 word, 11 long) and the memory indirection (bits 2-0, I/IS):
+    ///
+    /// ```text
+    ///   index used:       000 none, 001-011 pre-indexed, 101-111 post-indexed
+    ///   index suppressed: 000 none, 001-011 memory indirect
+    /// ```
+    ///
+    /// with an outer displacement of none, a word or a long (low 2 bits 01,
+    /// 10, 11). The displacements follow the extension word, base first.
+    /// The indirect address is a long read from data space. The reserved
+    /// encodings (displacement size 00, I/IS 100, or 1xx with the index
+    /// suppressed) take the illegal instruction exception.
+    #[inline(never)]
+    fn full_format(&mut self, base: u32, ext: u32) -> Res<u32> {
+        let iis = ext & 7;
+        let is = ext & 0x0040 != 0;
+        if ext & 0x0030 == 0 || iis == 4 || (is && iis > 4) {
+            return self.ea_illegal();
+        }
+        let bd = match (ext >> 4) & 3 {
+            2 => sext(self.fetch16()?, SZ_W),
+            3 => self.fetch32()?,
+            _ => 0,
+        };
+        let od = match iis & 3 {
+            2 => sext(self.fetch16()?, SZ_W),
+            3 => self.fetch32()?,
+            _ => 0,
+        };
+        let base = if ext & 0x0080 != 0 { 0 } else { base };
+        let x = if is { 0 } else { self.index_value(ext, true) };
+        if iis == 0 {
+            return Ok(base.wrapping_add(bd).wrapping_add(x));
+        }
+        if iis & 4 != 0 {
+            // post-indexed
+            let m = self.read32(base.wrapping_add(bd), ACC_DATA)?;
+            return Ok(m.wrapping_add(x).wrapping_add(od));
+        }
+        let m = self.read32(base.wrapping_add(bd).wrapping_add(x), ACC_DATA)?;
+        Ok(m.wrapping_add(od))
+    }
+
+    /// (d8,An,Xn) and (d8,PC,Xn): the brief extension word. The 68000 and
+    /// 68010 ignore bits 10-8; from the 68020 on, bits 10-9 scale the index
+    /// and bit 8 selects the full format. The addition takes 2 cycles more.
     fn indexed(&mut self, base: u32) -> Res<u32> {
         let ext = self.fetch16()?;
         self.cycles(2);
+        if self.model < Model::M68020 {
+            return Ok(base
+                .wrapping_add(sext(ext, SZ_B))
+                .wrapping_add(self.index_value(ext, false)));
+        }
+        if ext & 0x0100 != 0 {
+            return self.full_format(base, ext);
+        }
         Ok(base
             .wrapping_add(sext(ext, SZ_B))
-            .wrapping_add(self.index_value(ext)))
+            .wrapping_add(self.index_value(ext, true)))
     }
 
     /// Works out the effective address of mode/reg for an operand of `size`

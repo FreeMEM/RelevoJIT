@@ -35,6 +35,7 @@ pub const VEC_PRIVILEGE: u32 = 8;
 pub const VEC_TRACE: u32 = 9;
 pub const VEC_LINE_A: u32 = 10;
 pub const VEC_LINE_F: u32 = 11;
+pub const VEC_FORMAT_ERROR: u32 = 14;
 pub const VEC_SPURIOUS: u32 = 24;
 pub const VEC_AUTOVECTOR: u32 = 24; // + interrupt level 1-7
 pub const VEC_TRAP: u32 = 32; // + 0-15
@@ -55,6 +56,16 @@ pub enum Model {
     M68030,
     M68040,
     M68060,
+}
+
+/// The FPU, as `relevo_fpu`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fpu {
+    None = 0,
+    M68881,
+    M68882,
+    /// The built-in FPU of the 68040 or 68060
+    Internal,
 }
 
 /// Why `run()` returned, as `relevo_status`.
@@ -130,6 +141,7 @@ pub type Res<T = ()> = Result<T, Fault>;
 /// The configuration, checked (from `relevo_config`).
 pub struct Config {
     pub model: Model,
+    pub fpu: Fpu,
     pub memory: *mut u8,
     pub memory_size: u64,
     pub address_mask: u32,
@@ -145,6 +157,7 @@ pub struct Cpu {
     /// SR bits the model implements
     pub sr_mask: u16,
     pub model: Model,
+    pub fpu: Fpu,
     pub options: u32,
     pub host: relevo_host,
     /// What the host knows this CPU as (`relevo_cpu *`), for its functions.
@@ -194,21 +207,16 @@ pub struct Cpu {
     /// Bytes of the access that took a bus error (for the 68010+ frames)
     pub fault_size: u32,
 
+    /// FPU (interp/fpu.rs): the vector of an enabled exception to take
+    /// before the next floating-point instruction (0: none), and whether
+    /// FSAVE gives a null frame (after a reset, until an FPU instruction).
+    pub fpu_pending: u32,
+    pub fpu_null: bool,
+
     /// Level 7 is edge triggered
     pub prev_ipl: u32,
 
     pub table: Box<[Handler; 0x10000]>,
-}
-
-/// The FPU registers after a reset: NaN (all ones), FPCR, FPSR and FPIAR 0.
-fn fpu_reset(r: &mut Regs) {
-    r.fp = [FpReg {
-        mantissa: !0,
-        sign_exponent: 0x7FFF,
-    }; 8];
-    r.fpcr = 0;
-    r.fpsr = 0;
-    r.fpiar = 0;
 }
 
 impl Cpu {
@@ -226,13 +234,14 @@ impl Cpu {
             Model::M68020 | Model::M68030 | Model::M68040 => 0xF71F, // T1 T0 S M
             _ => 0xA71F,                                             // T1 S
         };
-        let (table, _) = interp::build_table(cfg.model);
+        let (table, _) = interp::build_table(cfg.model, cfg.fpu);
         let mut c = Cpu {
             r: Regs::default(),
             mem,
             addr_mask,
             sr_mask,
             model: cfg.model,
+            fpu: cfg.fpu,
             options: cfg.options,
             host: cfg.host,
             handle: core::ptr::null_mut(),
@@ -253,6 +262,8 @@ impl Cpu {
             ir: 0,
             ae_pc: 0,
             fault_size: 0,
+            fpu_pending: 0,
+            fpu_null: true,
             prev_ipl: 0,
             table,
         };
@@ -260,7 +271,7 @@ impl Cpu {
             c.mem.map(0, cfg.memory_size, crate::window::PAGE_RAM);
         }
         c.r.sr = SR_S | SR_IPL;
-        fpu_reset(&mut c.r);
+        c.fpu_reset();
         c
     }
 
@@ -296,7 +307,7 @@ impl Cpu {
         self.halted = false;
         self.trace_pending = false;
         self.in_group0 = false;
-        fpu_reset(&mut self.r);
+        self.fpu_reset();
         self.r.isp = self.mem_read32(0);
         self.r.a[7] = self.r.isp;
         self.r.pc = self.mem_read32(4);

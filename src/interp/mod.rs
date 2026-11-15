@@ -32,13 +32,17 @@ use alloc::boxed::Box;
 use alloc::vec;
 
 use crate::cpu::{
-    ACC_DATA, ACC_PROG, Cpu, Model, Res, SR_C, SR_N, SR_S, SR_V, SR_Z, VEC_PRIVILEGE,
+    ACC_DATA, ACC_PROG, Cpu, Fpu, Model, Res, SR_C, SR_N, SR_S, SR_V, SR_Z, VEC_PRIVILEGE,
 };
 
 mod arith;
+mod bitfield;
 mod bits;
 mod control;
 mod ea;
+mod fpu;
+mod m010;
+mod m020;
 mod moves;
 mod muldiv;
 mod system;
@@ -270,6 +274,7 @@ pub const EAB_IMM: u32 = 1 << 11; // #imm
 
 pub const EA_ALL: u32 = 0x0FFF;
 pub const EA_DATA: u32 = EA_ALL & !EAB_AREG;
+pub const EA_MEMORY: u32 = EA_DATA & !EAB_DREG;
 pub const EA_CONTROL: u32 = EAB_IND | EAB_D16 | EAB_D8 | EAB_ABSW | EAB_ABSL | EAB_PCD16 | EAB_PCD8;
 pub const EA_ALTERABLE: u32 = EAB_DREG
     | EAB_AREG
@@ -294,6 +299,8 @@ pub fn ea_valid(mode: u32, reg: u32, classes: u32) -> bool {
 }
 
 pub struct OpTable {
+    pub model: Model,
+    pub fpu: Fpu,
     t: Box<[Handler; 0x10000]>,
     /// Opcodes a group has claimed
     taken: Box<[bool; 0x10000]>,
@@ -332,11 +339,10 @@ impl OpTable {
     }
 }
 
-/// The table for `model`, and how many opcodes two groups claimed (0
-/// unless there is a bug). Opcodes the model does not execute go to the
-/// illegal instruction, line A or line F handlers. Only the 68000 so far:
-/// the groups of the 68010 and later models come with RR2.
-pub fn build_table(_model: Model) -> (Box<[Handler; 0x10000]>, u32) {
+/// The table for `model` and `fpu`, and how many opcodes two groups
+/// claimed (0 unless there is a bug). Opcodes the model does not execute go
+/// to the illegal instruction, line A or line F handlers.
+pub fn build_table(model: Model, fpu: Fpu) -> (Box<[Handler; 0x10000]>, u32) {
     let mut t: Box<[Handler; 0x10000]> = vec![control::op_illegal as Handler; 0x10000]
         .into_boxed_slice()
         .try_into()
@@ -344,6 +350,8 @@ pub fn build_table(_model: Model) -> (Box<[Handler; 0x10000]>, u32) {
     t[0xA000..=0xAFFF].fill(control::op_line_a);
     t[0xF000..=0xFFFF].fill(control::op_line_f);
     let mut tb = OpTable {
+        model,
+        fpu,
         t,
         taken: vec![false; 0x10000]
             .into_boxed_slice()
@@ -357,5 +365,8 @@ pub fn build_table(_model: Model) -> (Box<[Handler; 0x10000]>, u32) {
     arith::fill(&mut tb);
     bits::fill(&mut tb);
     muldiv::fill(&mut tb);
+    m010::fill(&mut tb);
+    m020::fill(&mut tb);
+    fpu::fill(&mut tb);
     (tb.t, tb.conflicts)
 }

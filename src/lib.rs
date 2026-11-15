@@ -18,9 +18,11 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+mod cache;
 pub mod capi;
 mod cpu;
 mod exception;
+mod fpx;
 mod interp;
 mod memory;
 mod window;

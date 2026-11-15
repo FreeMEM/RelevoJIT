@@ -22,7 +22,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::mem::{align_of, offset_of, size_of};
 use core::sync::atomic::Ordering::Relaxed;
 
-use crate::cpu::{Config, Cpu, FpReg, Model, Regs, Shared, Status};
+use crate::cpu::{Config, Cpu, FpReg, Fpu, Model, Regs, Shared, Status};
 use crate::window::Window;
 
 // ---- Types ---------------------------------------------------------------
@@ -270,10 +270,21 @@ fn model_from(raw: c_uint) -> Option<Model> {
     })
 }
 
+fn fpu_from(raw: c_uint) -> Option<Fpu> {
+    Some(match raw {
+        0 => Fpu::None,
+        1 => Fpu::M68881,
+        2 => Fpu::M68882,
+        3 => Fpu::Internal,
+        _ => return None,
+    })
+}
+
 /// The checks of the C version, and then what this version runs so far.
-fn config_valid(cfg: &relevo_config) -> Option<Model> {
+fn config_valid(cfg: &relevo_config) -> Option<(Model, Fpu)> {
     let model = model_from(cfg.model)?;
-    if cfg.fpu > 3 || cfg.engine > 1 {
+    let fpu = fpu_from(cfg.fpu)?;
+    if cfg.engine > 1 {
         return None;
     }
     if cfg.memory_size as u64 % RELEVO_PAGE_SIZE != 0 || cfg.memory_size as u64 > 1 << 32 {
@@ -290,11 +301,11 @@ fn config_valid(cfg: &relevo_config) -> Option<Model> {
     if !fpu_ok {
         return None;
     }
-    // Not yet: the 68010 to 68060 and the FPU (RR2), the JIT (RR3).
-    if model != Model::M68000 || cfg.engine != 0 {
+    // Not yet: the JIT (RR3).
+    if cfg.engine != 0 {
         return None;
     }
-    Some(model)
+    Some((model, fpu))
 }
 
 /// # Safety
@@ -308,12 +319,13 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
     }
     // SAFETY: the caller's promise.
     let cfg = unsafe { &*config };
-    let Some(model) = config_valid(cfg) else {
+    let Some((model, fpu)) = config_valid(cfg) else {
         return core::ptr::null_mut();
     };
     let shared = Arc::new(Shared::default());
     let config = Config {
         model,
+        fpu,
         memory: cfg.memory,
         memory_size: cfg.memory_size as u64,
         address_mask: cfg.address_mask,
@@ -439,13 +451,14 @@ pub unsafe extern "C" fn relevo_request_stop(cpu: *mut relevo_cpu) {
     shared.attention.store(1, Relaxed);
 }
 
-/// The interpreter keeps no translated code.
-///
 /// # Safety
 ///
 /// See `relevo_map()`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn relevo_invalidate(_cpu: *mut relevo_cpu, _address: u32, _size: u32) {}
+pub unsafe extern "C" fn relevo_invalidate(cpu: *mut relevo_cpu, address: u32, size: u32) {
+    // SAFETY: the caller's promise.
+    unsafe { cpu_mut(cpu) }.invalidate(address, size);
+}
 
 /// # Safety
 ///
@@ -544,9 +557,21 @@ pub extern "C" fn jit_translatable(_cpu: *mut relevo_cpu, _pc: u32) -> bool {
 /// groups claimed (0 unless there is a bug). The table stays this
 /// library's: `table` is not written.
 #[unsafe(no_mangle)]
-pub extern "C" fn interp_fill_table(_table: *mut c_void, model: c_uint, _fpu: c_uint) -> c_uint {
-    match model_from(model) {
-        Some(m) => crate::interp::build_table(m).1,
-        None => 0,
+pub extern "C" fn interp_fill_table(_table: *mut c_void, model: c_uint, fpu: c_uint) -> c_uint {
+    match (model_from(model), fpu_from(fpu)) {
+        (Some(m), Some(f)) => crate::interp::build_table(m, f).1,
+        _ => 0,
     }
+}
+
+/// `cache_write_cacr()` of c/src/cache.h: a write to CACR, as MOVEC does it
+/// (tests/test_020.c).
+///
+/// # Safety
+///
+/// See `relevo_map()`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cache_write_cacr(cpu: *mut relevo_cpu, value: u32) {
+    // SAFETY: the caller's promise.
+    unsafe { cpu_mut(cpu) }.write_cacr(value);
 }
