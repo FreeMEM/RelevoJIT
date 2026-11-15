@@ -533,7 +533,7 @@ static unsigned garbage = 10;   /* percent */
 static unsigned ulps = 3;
 static bool strict;
 static unsigned long cases, steps;
-static unsigned long trans_steps, trans_differ, trans_max_ulps;
+static unsigned long trans_steps, trans_differ, trans_max_ulps, trans_inex;
 
 typedef struct state {
     relevo_regs r;
@@ -611,6 +611,14 @@ static bool compare_cpus(machine *x, machine *y, relevo_status sx,
     relevo_regs *a = x->api->relevo_get_regs(x->cpu);
     relevo_regs *b = y->api->relevo_get_regs(y->cpu);
     bool ok = true;
+    /* glibc's log10l and log2l are not always exact for exact powers
+     * (log10 of 1000): C then sets INEX2 (and the accrued INEX) where Rust,
+     * exact, does not. Tolerated with the values; Rust takes C's FPSR. */
+    if (tol_fp && !strict && a->fpsr != b->fpsr
+        && ((a->fpsr ^ b->fpsr) & ~0x0208u) == 0) {
+        trans_inex++;
+        a->fpsr = b->fpsr;
+    }
 #define CMP(f)                                                              \
     if (a->f != b->f) {                                                     \
         if (print)                                                          \
@@ -887,12 +895,16 @@ static bool run_case(machine *x, machine *y, unsigned maxlen, bool full_mem)
         relevo_status sx = x->api->relevo_run(x->cpu, 1);
         relevo_status sy = y->api->relevo_run(y->cpu, 1);
         /* An exception taken before the instruction (trace, interrupt)
-         * runs the handler's first one instead: FPIAR tells where the
-         * floating-point instruction that just ran was. */
+         * runs the handler's first one instead, which may be anywhere,
+         * even the same instruction again. FPIAR tells where the last
+         * general floating-point instruction was: the only kind that
+         * changes FP registers in ways that may differ (FMOVEM and
+         * FRESTORE load the same values in both). */
         uint32_t fpiar = y->api->relevo_get_regs(y->cpu)->fpiar;
-        trans = trans || (fpiar != fpiar0 && trans_at(y, fpiar));
+        bool trans_now = trans || (fpiar != fpiar0 && trans_at(y, fpiar));
+        trans = trans_now || trans_at(y, fpiar);
         steps++;
-        trans_steps += trans;
+        trans_steps += trans_now;
         if (!compare_cpus(x, y, sx, sy, trans, false)) {
             printf("crdiff %s, %s, seed 0x%" PRIX64 ": case %lu differs at"
                    " instruction %" PRIu64 " (PC %08" PRIX32 ":",
@@ -941,7 +953,7 @@ static int run_config(unsigned long n, unsigned maxlen)
         return -1;
     }
     gen_fpu = fpu;
-    cases = steps = trans_steps = trans_differ = trans_max_ulps = 0;
+    cases = steps = trans_steps = trans_differ = trans_max_ulps = trans_inex = 0;
     restore(&x, true);
     restore(&y, true);
     int result = 0;
@@ -957,6 +969,8 @@ static int run_config(unsigned long n, unsigned maxlen)
         if (trans_steps != 0)
             printf("; %lu transcendental, %lu of them within %u ulps (max %lu)",
                    trans_steps, trans_differ, ulps, trans_max_ulps);
+        if (trans_inex != 0)
+            printf(", %lu inexact only in C", trans_inex);
         printf("\n");
     }
     machine_free(&x);
@@ -1042,9 +1056,14 @@ int main(int argc, char **argv)
         { RELEVO_68040, RELEVO_FPU_INTERNAL }, { RELEVO_68060, RELEVO_FPU_NONE },
         { RELEVO_68060, RELEVO_FPU_INTERNAL },
     };
+    uint64_t base = seed;
     for (unsigned i = 0; i < sizeof configs / sizeof configs[0]; i++) {
         model = configs[i].m;
         fpu = configs[i].f;
+        /* Each configuration its own seed, printed with a difference:
+         * -m, -f and -s with it give the same cases again. */
+        rng_state = (base + 0x9E3779B97F4A7C15ull * i) | 1;
+        seed = rng_state;
         if (run_config(n, maxlen) > 0)
             return 1;
     }

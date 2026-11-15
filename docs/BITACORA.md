@@ -774,3 +774,104 @@ Queda para RR2:
 - El banco del oráculo con la biblioteca de Rust.
 - Para RR4: las pruebas incluyen `c/src/cpu.h` (constantes `VEC_*`; `jitdiff` lee `cpu->fpu_pending`). Al retirar
   `c/` hará falta una cabecera de pruebas propia.
+
+### 2026-11-15 — RR2: 68010 a 68060 y la FPU en Rust
+
+Hecho:
+
+- El intérprete de los 68010 a 68060 sin MMU, traducido de `c/src`: VBR, `MOVEC` (con los registros de cada modelo y
+  CACR), `MOVES`, `RTD`, `MOVE from CCR`, `MOVE from SR` privilegiado, marcos de excepción del 010 en adelante
+  (formatos 0, 2, 8, B, 7 y 1, pila maestra), `RTE` con formatos y error de formato, banderas de división por cero
+  por modelo, `CHK` del 020, modos de dirección del 020 (índice escalado, palabra completa, indirectos; las
+  codificaciones reservadas dan instrucción ilegal con `ea_illegal()`, que devuelve `Fault` en vez de `longjmp`),
+  `Bcc.L`, las instrucciones del 020 (`src/interp/m020.rs`: MUL/DIV largos, `CHK2`, `CMP2`, `CAS`, `CAS2`,
+  `TRAPcc`, `PACK`, `UNPK`, `EXTB.L`, `LINK.L`, `CMPI`/`TST` nuevos), campos de bits (`bitfield.rs`), `MOVE16`,
+  `CINV`, `CPUSH` y CACR (`src/cache.rs`; la invalidación no hace nada hasta el JIT). El 68060, al nivel de la
+  versión en C (ejecuta como un 040 lo que el chip deja al software).
+- La FPU (`src/interp/fpu.rs`, de `ops_fpu.c`): todo lo de la versión en C salvo las dos entradas del JIT
+  (`fpu_jit_op`, `fpu_jit_branch`), que llegan con RR3. `arith_result()` y `fmove_out_words()` quedan aparte para
+  ellas.
+- `fpx` en Rust (`src/fpx/`, en paralelo en la rama `rust-fpx`, fusionada): la aritmética extendida de `fpx.c` con
+  `u128`, el decimal empaquetado y la ROM de `FMOVECR`. Las transcendentales ya no usan `long double`: son propias
+  y deterministas (`trans.rs`, como pide el punto 3 de compatibilidad de `REVISION.md`). Calculan con 128 bits de
+  mantisa, reducen el argumento de seno, coseno y tangente de forma exacta para cualquier valor (Payne-Hanek, con
+  2/pi generado con aritmética exacta en `trans_consts.rs`) y redondean una sola vez con el modo y la precisión del
+  FPCR (la versión en C redondea primero al más cercano). Los casos especiales y los resultados exactos siguen las
+  reglas de `fpx_trans.c`.
+- Pruebas en C contra Rust: ya solo se saltan las 18 del JIT; las otras 55 de las 73 saltadas corren. `test_020.c`
+  y `test_fpu.c` llaman a funciones internas: decidí exportarlas desde Rust con la misma firma (`cache_write_cacr` en
+  `capi.rs`; los `fpx_*` en `src/hooks.rs`, tercer módulo con `unsafe`), no pasarlas a Rust. Así la misma prueba
+  corre contra las dos versiones (y la comparación con el x87 de `test_fpu.c` necesita `long double` de C).
+- `make test` con Rust corre el banco del oráculo.
+- Diferencial nuevo C contra Rust (`tests/crdiff.c`, `make crdiff`, en paralelo en la rama `rust-diff`, fusionada):
+  un solo proceso con las dos bibliotecas; la de C con sus símbolos globales renombrados `c_*` (`nm` y `objcopy
+  --redefine-syms`). Las dos CPU avanzan instrucción a instrucción con el mismo estado al azar (SR con T1, T0, M y
+  S, VBR, CACR, MMU, FPU, FPCR con excepciones, niveles de interrupción que cambian, funciones de línea A, línea F y
+  `RESET` del anfitrión) y se compara todo `relevo_regs`, ciclos, instrucciones, estado de salida, las llamadas al
+  anfitrión y la memoria. El generador de `jitdiff` pasa a `tests/gen68k.c` (mismos casos que antes) y se añaden
+  las instrucciones del 010 al 060, la FPU y palabras basura (`-g`). Las transcendentales se toleran hasta 3 ulps en
+  la precisión del FPCR; tras ellas Rust toma los registros de la FPU de C y el resto del caso se compara exacto.
+
+Comprobado:
+
+- `make test` (Rust): ABI 56/56, `run_tests` 83/83 con 18 saltadas (JIT), oráculo entero, `crdiff` corto, `sst` de
+  `NOP`. También con clang. `make sst`: 317 500 de 317 500, ciclos exactos. `make c-test` sigue pasando (101/101,
+  oráculo con los dos motores, `jitdiff`).
+- El banco del oráculo da con Rust lo mismo que con C, programa a programa y con los mismos casos sin comparar
+  (`fputrans` a 48 bits).
+- La biblioteca en modo depuración (con comprobación de desbordamientos): `run_tests` y el oráculo de 010, 020 y
+  marcos, sin pánicos.
+- `cargo test` 13/13, `cargo clippy --all-targets -D warnings` sin avisos, `cargo fmt`, y sin `std` compila.
+- `fpx` contra la versión en C, bit a bit en valor y banderas, con un millón de casos por función en los 4 modos y
+  las 3 precisiones: suma, resta, producto, división, raíz, `FSCALE`, `FINT`, `FMOD`, `FREM` (con el cociente),
+  comparación, conversiones, `FGETEXP`, `FGETMAN`. Empaquetado (125 000 casos) y constantes, sin diferencias.
+- Transcendentales, 250 000 casos por función al más cercano: iguales a C bit a bit entre el 76 % (log10) y el
+  99 % (atan); como mucho 1 ulp en casi todas, 2 en sinh, lognp1, etoxm1, tan y cosh, 3 en tanh y atanh; banderas
+  siempre iguales. Contra una referencia de alta precisión (`decimal` de Python), unos 6 000 puntos, 300 por
+  función de los que difieren: Rust redondea bien en todos; C acierta solo en 50 o 60 de esos 300. Donde difieren,
+  se equivoca C.
+- Diferencial C contra Rust (`make crdiff` y dos tandas más con otras semillas, de hasta 32 y 64 instrucciones,
+  las 11 configuraciones: 68000, 68010, 68020 sin FPU, con 68881 y con 68882, 68030 sin FPU y con 68882, 68040 y
+  68060 sin FPU y con la suya): 12,1 millones de casos, 187,6 millones de instrucciones, sin diferencias en
+  registros, SR, memoria, ciclos, instrucciones, estado de salida ni llamadas al anfitrión. De 79 012
+  transcendentales del 68881/68882, 6 922 difieren de C en 1 a 3 ulps (como mucho 3), y una vez solo en `INEX2`
+  (el fallo de C de abajo). Unos 22 000 casos por segundo.
+
+Fallos encontrados por el diferencial:
+
+- En Rust (`fpx`, corregido): `FTENTOX` de los enteros 19 a 27 desbordaba los 64 bits al calcular 10^n exacto.
+  Prueba nueva en `fpx::tests`.
+- En C (no corregido, la versión en C se retira en RR4): `FLOG10` de una potencia de 10 exacta no siempre da el
+  entero exacto, porque `log10l` de glibc no es exacto (10^3, 10^6, 10^7, 10^11...): da 1 ulp de más e `INEX2`. Rust
+  da el entero sin `INEX2`, como pide `fpx_trans.c`.
+- En la herramienta: tras una traza o una interrupción, la instrucción que corre no es la del PC de antes (puede
+  ser la misma transcendental otra vez); ahora `crdiff` mira también FPIAR para saber si lo fue. Con `-a`, cada
+  configuración tiene su propia semilla, la que se imprime si hay una diferencia, para repetirla con `-m`, `-f` y
+  `-s`.
+
+Velocidad del intérprete (`make bench` y `make c-bench`, gcc -O2 para C, millones de instrucciones 68k por segundo,
+el mejor de tres; `bench -m` 68000, 68020 y 68040):
+
+| Programa | C 68000 | Rust 68000 | C 68020 | Rust 68020 | C 68040 | Rust 68040 |
+|---|---|---|---|---|---|---|
+| Bucle aritmético | 120 | 193 | 121 | 192 | 123 | 193 |
+| Copia de memoria | 118 | 142 | 117 | 141 | 118 | 142 |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 132 | 192 | 130 | 187 | 131 | 191 |
+| Coma flotante | | | 51 | 64 | 51 | 67 |
+| Página del anfitrión | 103 | 149 | 102 | 148 | 104 | 148 |
+
+Las comprobaciones de modelo no han costado nada: el 68000 va como en RR1. Rust sigue entre 1,2 y 1,6 veces más
+rápido que C, y la FPU 1,3 veces. Las transcendentales propias tardan entre 220 y 500 ns por llamada, de 2 a 4 veces
+más que `long double` de glibc (un 68881 tarda unos 25 µs en `FSIN`); `FTWOTOX` y `FTENTOX` van más rápidas.
+
+No hecho:
+
+- Las entradas de la FPU para el JIT (`fpu_jit_op`, `fpu_jit_branch`) y que `relevo_invalidate`, `CINV`, `CPUSH` y
+  CACR quiten traducciones: RR3.
+- `crdiff` no puede tocar `fpu_pending` ni `fpu_null`: cada caso empieza sin excepción de la FPU pendiente (las
+  pendientes salen dentro del caso). Las transcendentales solo se comparan con tolerancia contra C.
+- Lo que ya faltaba en C sigue faltando: MMU, `CALLM`/`RTM`, traza T0, el 68060 de verdad, ciclos exactos del 020
+  en adelante.
+
+Queda para RR3: el JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, la FPU desde el bloque), `jitdiff`,
+`sst JIT=1`, el oráculo con `-j` y `bench` con el JIT. Las 18 pruebas de `test_jit.c`.
