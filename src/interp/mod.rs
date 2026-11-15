@@ -26,7 +26,7 @@
 //! the indexed modes and of -(An) on reads, `jump()` and the exceptions add
 //! the prefetches from the new address. A handler adds the rest with
 //! `cycles()`: the manual's time for the instruction minus 4 per word and per
-//! access. SingleStepTests checks it ("cyc" column of build/rust/sst).
+//! access. SingleStepTests checks it ("cyc" column of build/sst).
 
 use alloc::boxed::Box;
 use alloc::vec;

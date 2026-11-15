@@ -531,11 +531,11 @@ pub unsafe extern "C" fn relevo_write(
 
 // ---- Hooks of the C tests ----------------------------------------------------
 //
-// The tests in tests/ call a few internal functions of the C version
-// (c/src/jit/jit.h, interp_fill_table()) and reach into its CPU for the
-// FPU's state; these are the same functions here. Not part of the API.
+// The tests in tests/ call a few internal functions (tests/hooks.h, as the
+// C version had them) and reach into the CPU for the FPU's state. Not part
+// of the API.
 
-/// `jit_stats` of c/src/jit/jit.h
+/// `jit_stats` of tests/hooks.h
 pub type jit_stats = crate::jit::Stats;
 
 #[unsafe(no_mangle)]
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn jit_translatable(cpu: *mut relevo_cpu, pc: u32) -> bool
 /// The FPU's hidden state: a pending exception's vector (0: none) and
 /// whether FSAVE gives a null frame. Reads it into `pending` and `null`
 /// (unless NULL), then sets it from `set_pending` and `set_null` if `set`
-/// is not 0. For jitdiff and crdiff; the C version has the same.
+/// is not 0. For jitdiff and sysdiff.
 ///
 /// # Safety
 ///
@@ -624,7 +624,7 @@ pub extern "C" fn interp_fill_table(_table: *mut c_void, model: c_uint, fpu: c_u
     }
 }
 
-/// `cache_write_cacr()` of c/src/cache.h: a write to CACR, as MOVEC does it
+/// `cache_write_cacr()` of tests/hooks.h: a write to CACR, as MOVEC does it
 /// (tests/test_020.c).
 ///
 /// # Safety

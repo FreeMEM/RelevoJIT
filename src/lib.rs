@@ -2,7 +2,8 @@
 //! RelevoJIT: a Motorola 680x0 interpreter and x86-64 JIT.
 //!
 //! The crate exports the C interface of `include/relevo.h` (module [`capi`]),
-//! with the same ABI as the C version in `c/`. It is `no_std` with `alloc`;
+//! with the same ABI as the C version it was translated from (retired in
+//! RR4; it is in the history). It is `no_std` with `alloc`;
 //! the `std` feature (on by default) is for hosted systems and the tests.
 //!
 //! What is here (docs/REESCRITURA.md): the interpreter of the 68000 to

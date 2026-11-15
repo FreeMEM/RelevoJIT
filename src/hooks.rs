@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Test hooks of the C tests: tests/test_fpu.c calls the extended
-//! arithmetic (`fpx_*` of c/src/fpx.h) directly. These exports have the
-//! same C signatures, so the same tests run against both libraries. Not
-//! part of the API.
+//! arithmetic (`fpx_*`, declared in tests/hooks.h) directly, with the C
+//! signatures the C version had. Not part of the API.
 #![allow(unsafe_code)]
 #![allow(non_camel_case_types)]
 

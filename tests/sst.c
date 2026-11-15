@@ -19,7 +19,7 @@
 #include <string.h>
 
 #include "sst_run.h"
-#include "jit/jit.h"
+#include "hooks.h"
 
 static const char *base_name(const char *path, char *buf, size_t size)
 {

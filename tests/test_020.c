@@ -11,7 +11,7 @@
  */
 #include <string.h>
 
-#include "cache.h"
+#include "hooks.h"
 #include "check.h"
 #include "tests.h"
 

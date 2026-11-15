@@ -172,7 +172,7 @@ const EMPTY_IND: Ind = Ind {
     code: 0,
 };
 
-/// For the tests: `jit_stats` of the C version.
+/// For the tests: `jit_stats` of tests/hooks.h.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Stats {

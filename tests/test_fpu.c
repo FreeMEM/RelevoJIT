@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
- * Tests of the FPU (task R4): the extended arithmetic of src/fpx*.c and
- * the instructions of src/interp/ops_fpu.c. The expected values come from
+ * Tests of the FPU (task R4): the extended arithmetic of src/fpx and the
+ * instructions of src/interp/fpu.rs. The expected values come from
  * the MC68881/MC68882 User's Manual, M68000PRM chapter 5 and MC68040UM
  * chapter 9, and from exact arithmetic; the opcodes were checked with
  * vasm.
@@ -16,8 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cpu.h"
-#include "fpx.h"
+#include "hooks.h"
 #include "check.h"
 #include "tests.h"
 
@@ -707,15 +706,10 @@ static void check_exception(unsigned vector, uint32_t pc)
 
 void test_fpu_table_no_conflicts(void)
 {
-    relevo_handler *t = malloc(sizeof *t * 0x10000);
-    CHECK(t != NULL);
-    if (t == NULL)
-        return;
-    CHECK_EQ(interp_fill_table(t, RELEVO_68020, RELEVO_FPU_68881), 0);
-    CHECK_EQ(interp_fill_table(t, RELEVO_68030, RELEVO_FPU_68882), 0);
-    CHECK_EQ(interp_fill_table(t, RELEVO_68040, RELEVO_FPU_INTERNAL), 0);
-    CHECK_EQ(interp_fill_table(t, RELEVO_68060, RELEVO_FPU_INTERNAL), 0);
-    free(t);
+    CHECK_EQ(interp_fill_table(NULL, RELEVO_68020, RELEVO_FPU_68881), 0);
+    CHECK_EQ(interp_fill_table(NULL, RELEVO_68030, RELEVO_FPU_68882), 0);
+    CHECK_EQ(interp_fill_table(NULL, RELEVO_68040, RELEVO_FPU_INTERNAL), 0);
+    CHECK_EQ(interp_fill_table(NULL, RELEVO_68060, RELEVO_FPU_INTERNAL), 0);
 }
 
 void test_fpu_reset_state(void)

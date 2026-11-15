@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0
  *
  * The random 68k code and state generator shared by the differential tests
- * (jitdiff.c: the JIT against the interpreter; crdiff.c: the Rust library
- * against the C one).
+ * (jitdiff.c and sysdiff.c, the JIT against the interpreter).
  *
  * A tool sets `model` and `gen_fpu`, calls setup_static() once (vectors,
  * handler and ROM in init_mem) and, for each case, rnd_insn(pc) to get one
@@ -69,12 +68,6 @@ unsigned size_bits(unsigned size);
 int32_t rnd_disp(uint32_t pc);
 uint32_t rnd_mask(void);
 unsigned rnd_fop(void);
-/* Whether an FPU opmode is a transcendental function (68881/68882), and
- * whether the generator leaves them out (crdiff -J: the two libraries
- * compute them differently, and on the JIT a run is compared only at its
- * end). */
-bool fop_transcendental(unsigned opmode);
-extern bool gen_no_trans;
 void rnd_fpu(uint32_t pc, unsigned dn);
 void rnd_insn_more(uint32_t pc, unsigned size, unsigned dn);
 /* One random instruction for code at `pc`, in words[0..nwords). */

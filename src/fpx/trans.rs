@@ -30,7 +30,7 @@
 use super::{DZ, Env, Fpx, INEX2, OPERR, TOP};
 use super::{default_nan, exp, is_inf, is_nan, is_snan, is_zero, make, pack, sign};
 
-/// The functions, numbered as `fpx_func` of the C version.
+/// The functions, numbered as `fpx_func` of tests/hooks.h.
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Func {

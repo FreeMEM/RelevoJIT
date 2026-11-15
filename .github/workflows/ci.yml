@@ -14,24 +14,22 @@ jobs:
         san: ["", "-fsanitize=address,undefined -fno-sanitize-recover=undefined"]
     steps:
       - uses: actions/checkout@v4
-      - name: "C version (c/): unit tests, oracle bench and JIT differential"
-        run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" c-test
-      - name: "Rust version: the same C tests against it, and the ABI check"
+      - name: "make test: ABI check, unit tests, oracle bench, JIT differentials"
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" test
-      - name: "Rust version: clippy and its own tests"
+      - name: "Rust: clippy and the crate's own tests"
         if: matrix.san == '' && matrix.cc == 'gcc'
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo test
-      - name: SingleStepTests/m68000, both versions, interpreter and JIT
+      - name: SingleStepTests/m68000, interpreter and JIT
         if: matrix.san == ''
         run: |
           make data
           make CC=${{ matrix.cc }} sst
-          make CC=${{ matrix.cc }} c-sst
-          make CC=${{ matrix.cc }} c-sst JIT=1
+          make CC=${{ matrix.cc }} sst JIT=1
 
-  # Windows is written but was never run before this job: it may fail until V1 is done.
+  # Windows is written but was never run with the Rust library: it may fail
+  # until V1 is done.
   windows:
     runs-on: windows-latest
     continue-on-error: true
@@ -43,5 +41,5 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: make mingw-w64-ucrt-x86_64-gcc
-      - run: make CC=gcc c-test
+          install: make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-rust
+      - run: make CC=gcc test

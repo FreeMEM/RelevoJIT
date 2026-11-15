@@ -13,7 +13,7 @@ Kickstart (the oracle), Emu68 (jit-host) and RelevoJIT.
                                           without PROG, those that take no
                                           exception (jit-host dies on one)
     oraculo.py relevo --cpu 68020 [PROG...]
-                                          RelevoJIT's lines (build/bench/), compared
+                                          RelevoJIT's lines (build/oraculo.d/), compared
                                           with the oracle
     oraculo.py list                       the programs
 
@@ -74,7 +74,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TESTS = ROOT / "tests" / "oraculo"
-BUILD = ROOT / "build" / "bench"
+BUILD = ROOT / "build" / "oraculo.d"
 VASM = os.environ.get("VASM", "/opt/amiga/bin/vasmm68k_mot")
 EMU_RUN = Path(os.environ.get("DASH_EMU_RUN",
                               Path.home() / "Projects/FreeMEMLang/tools/emu_run.py"))
@@ -1230,8 +1230,8 @@ def run_emu68(names):
 
 
 def run_relevo(names, cpu, limit):
-    # make oraculo says which build (IMPL) to run
-    exe = Path(os.environ.get("RELEVO_ORACULO", ROOT / "build" / "c" / "oraculo"))
+    # make oraculo passes its build/oraculo
+    exe = Path(os.environ.get("RELEVO_ORACULO", ROOT / "build" / "oraculo"))
     status = 0
     for name in names:
         r = subprocess.run([str(exe), "-d", cpu, str(TESTS / f"{name}.bin")],

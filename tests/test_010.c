@@ -8,7 +8,7 @@
  */
 #include <string.h>
 
-#include "cpu.h"
+#include "hooks.h"
 #include "check.h"
 #include "tests.h"
 

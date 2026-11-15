@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cpu.h"
+#include "hooks.h"
 #include "check.h"
 #include "tests.h"
 
@@ -72,13 +72,8 @@ static relevo_cpu *setup(const uint16_t *code, size_t n)
 
 void test_table_no_conflicts(void)
 {
-    relevo_handler *t = malloc(sizeof *t * 0x10000);
-    CHECK(t != NULL);
-    if (t == NULL)
-        return;
     for (relevo_model m = RELEVO_68000; m <= RELEVO_68060; m++)
-        CHECK_EQ(interp_fill_table(t, m, RELEVO_FPU_NONE), 0);
-    free(t);
+        CHECK_EQ(interp_fill_table(NULL, m, RELEVO_FPU_NONE), 0);
 }
 
 void test_address_error_frame(void)

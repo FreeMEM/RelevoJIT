@@ -27,7 +27,7 @@
 #include <string.h>
 
 #include "relevo.h"
-#include "jit/jit.h"
+#include "hooks.h"
 #include "gen68k.h"
 
 /* ---- The two machines ------------------------------------------------- */
