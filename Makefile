@@ -14,15 +14,16 @@
 #   make jitdiff        a longer run of the JIT against the interpreter
 #   make bench          speed of the JIT against the interpreter
 #   make crdiff         the Rust library against the C one, random code on
-#                       every model (tests/crdiff.c; make c-crdiff: the C one
-#                       against itself, which checks the tool)
+#                       every model, interpreters and JITs (tests/crdiff.c;
+#                       make c-crdiff: the C one against itself, which
+#                       checks the tool)
 #   make oraculo        regenerate the oracle bench (tools/oraculo: FS-UAE, Emu68)
 #   make c-test         any target with c- in front: the same on the C version
 #   make CC=clang       any C11 compiler; objects are rebuilt when CC changes
 #   make clean
 #
 # What the Rust version does not have yet is skipped, with a notice: its
-# unit tests in tests/skip_rust.c, and here the runs that need it.
+# unit tests in tests/skip_rust.c (none since RR3).
 
 IMPL ?= rust
 CARGO ?= cargo
@@ -72,7 +73,6 @@ UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
             tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c \
             tests/test_sst.c tests/test_jit.c tests/skip_rust.c $(TEST_COMMON)
 EXTRA_TOOLS := $(BUILD)/abi $(BUILD)/crdiff
-# The interpreter only so far (RR2)
 BENCH_FLAGS ?=
 else
 $(error IMPL must be rust or c)
@@ -146,8 +146,17 @@ $(BUILD)/crdiff: $(CRDIFF_OBJ) $(LIB) $(C_LIB_RENAMED)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(CRDIFF_OBJ) $(LIB) \
 	    $(C_LIB_RENAMED) $(LDLIBS)
 
+# The same checks on either version; the Rust one also checks its ABI and
+# runs a short differential against the C one.
 ifeq ($(IMPL),c)
-test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
+TEST_EXTRA_DEPS :=
+else
+TEST_EXTRA_DEPS := $(BUILD)/abi $(BUILD)/crdiff
+endif
+test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff $(TEST_EXTRA_DEPS)
+ifeq ($(IMPL),rust)
+	$(BUILD)/abi
+endif
 	$(BUILD)/run_tests
 	$(BUILD)/oraculo $(ORACLE_DATA)
 	$(BUILD)/oraculo -j $(ORACLE_DATA)
@@ -157,6 +166,11 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/jitdiff -m 68000 -n 5000 -k 12 -x
 	$(BUILD)/jitdiff -m 68020 -n 5000 -k 16 -e
 	$(BUILD)/jitdiff -m 68040 -n 5000 -k 64
+ifeq ($(IMPL),rust)
+	$(BUILD)/crdiff -a -n 3000 -k 12
+	$(BUILD)/crdiff -J rust -a -n 1000 -k 32
+	$(BUILD)/crdiff -J both -a -n 1000 -k 32
+endif
 	@if [ -f $(SST_DATA)/NOP.json ]; then \
 	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
 	    $(BUILD)/sst $(SST_DATA)/NOP.json; \
@@ -164,25 +178,9 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	else \
 	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
 	fi
-else
-test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/abi $(BUILD)/crdiff
-	$(BUILD)/abi
-	$(BUILD)/run_tests
-	$(BUILD)/oraculo $(ORACLE_DATA)
-	$(BUILD)/crdiff -a -n 3000 -k 12
-	@echo 'SKIPPED: the oracle bench on the JIT (oraculo -j) and jitdiff (the JIT: RR3)'
-	@if [ -f $(SST_DATA)/NOP.json ]; then \
-	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
-	    $(BUILD)/sst $(SST_DATA)/NOP.json; \
-	    echo 'SKIPPED: sst -j (the JIT: RR3)'; \
-	else \
-	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
-	fi
-endif
 
 # Many more random cases, each model, both ways of swapping bytes and of
 # keeping the condition codes.
-ifeq ($(IMPL),c)
 jitdiff: $(BUILD)/jitdiff
 	for m in 68000 68010 68020 68030 68040; do \
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 1 || exit 1; \
@@ -191,17 +189,19 @@ jitdiff: $(BUILD)/jitdiff
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -e || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 64 || exit 1; \
 	done
-else
-jitdiff:
-	@echo 'SKIPPED: jitdiff needs the JIT (RR3); make c-jitdiff runs it on the C version'
-endif
 
-# The Rust library against the C one: many random cases on every model.
+# The Rust library against the C one: many random cases on every model, on
+# the interpreters, then the Rust JIT against the C interpreter (-J rust) and
+# against the C JIT (-J both).
 crdiff: $(BUILD)/crdiff
 	$(BUILD)/crdiff -a -n 300000 -k 1
 	$(BUILD)/crdiff -a -n 200000 -k 16
 	$(BUILD)/crdiff -a -n 50000 -k 64
 	$(BUILD)/crdiff -a -n 50000 -k 16 -g 100
+	$(BUILD)/crdiff -J rust -a -n 100000 -k 16
+	$(BUILD)/crdiff -J rust -a -n 30000 -k 64
+	$(BUILD)/crdiff -J both -a -n 100000 -k 16
+	$(BUILD)/crdiff -J both -a -n 30000 -k 64
 
 bench: $(BUILD)/bench
 	$(BUILD)/bench $(BENCH_FLAGS)

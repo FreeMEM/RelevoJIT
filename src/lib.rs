@@ -27,6 +27,7 @@ mod exception;
 mod fpx;
 mod hooks;
 mod interp;
+mod jit;
 mod memory;
 mod window;
 

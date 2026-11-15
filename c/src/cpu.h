@@ -385,4 +385,11 @@ bool fpu_jit_branch(relevo_cpu *cpu, uint32_t pc, unsigned pred);
 uint32_t fpu_jit_op(relevo_cpu *cpu, uint32_t pc, uint32_t cmd_ea,
                     uint32_t value);
 
+/* For the tests (jitdiff, crdiff), not part of the API: reads the FPU's
+ * hidden state (a pending exception's vector, 0 for none; whether FSAVE
+ * gives a null frame) into *pending and *null unless NULL, then sets it
+ * if `set` is not 0. The Rust library has the same function. */
+void relevo_test_fpu_state(relevo_cpu *cpu, unsigned *pending, bool *null,
+                           int set, unsigned set_pending, bool set_null);
+
 #endif /* RELEVO_CPU_H */

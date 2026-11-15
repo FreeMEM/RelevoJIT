@@ -298,11 +298,7 @@ fn config_valid(cfg: &relevo_config) -> Option<(Model, Fpu)> {
         3 => matches!(model, Model::M68040 | Model::M68060),
         _ => true,
     };
-    if !fpu_ok {
-        return None;
-    }
-    // Not yet: the JIT (RR3).
-    if cfg.engine != 0 {
+    if !fpu_ok || (cfg.engine == 1 && !crate::jit::available()) {
         return None;
     }
     Some((model, fpu))
@@ -331,10 +327,13 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
         address_mask: cfg.address_mask,
         options: cfg.options,
         host: cfg.host,
+        jit: cfg.engine == 1,
     };
     // SAFETY: the host's memory block, as relevo.h asks of it.
     let window = unsafe { Window::new(config.memory, config.memory_size) };
-    let cpu = Cpu::new(&config, window, Arc::clone(&shared));
+    let Some(cpu) = Cpu::new(&config, window, Arc::clone(&shared)) else {
+        return core::ptr::null_mut();
+    };
     let handle = Box::into_raw(Box::new(Handle {
         shared,
         cpu: UnsafeCell::new(cpu),
@@ -368,7 +367,7 @@ pub unsafe extern "C" fn relevo_map(
 ) -> c_int {
     // SAFETY: the caller's promise.
     let c = unsafe { cpu_mut(cpu) };
-    if kind > u32::from(crate::window::PAGE_HOST) || !c.mem.map(address, size, kind as u8) {
+    if kind > u32::from(crate::window::PAGE_HOST) || !c.map(address, size, kind as u8) {
         return -1;
     }
     0
@@ -498,59 +497,85 @@ pub unsafe extern "C" fn relevo_write(
 // ---- Hooks of the C tests ----------------------------------------------------
 //
 // The tests in tests/ call a few internal functions of the C version
-// (c/src/jit/jit.h, interp_fill_table()). These are their stand-ins until
-// the pieces they test arrive (the JIT: RR3). Not part of the API.
+// (c/src/jit/jit.h, interp_fill_table()) and reach into its CPU for the
+// FPU's state; these are the same functions here. Not part of the API.
 
 /// `jit_stats` of c/src/jit/jit.h
-#[repr(C)]
-pub struct jit_stats {
-    pub blocks: u64,
-    pub insns: u64,
-    pub runs: u64,
-    pub bails: u64,
-    pub interp: u64,
-    pub flushes: u64,
-    pub links: u64,
-    pub dropped: u64,
-    pub host: u64,
-}
+pub type jit_stats = crate::jit::Stats;
 
-/// No JIT yet.
 #[unsafe(no_mangle)]
 pub extern "C" fn jit_available() -> bool {
-    false
+    crate::jit::available()
 }
 
 /// # Safety
 ///
-/// `out` points to a `jit_stats`.
+/// `cpu` as for `relevo_map()`; `out` points to a `jit_stats`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_get_stats(_cpu: *const relevo_cpu, out: *mut jit_stats) {
+pub unsafe extern "C" fn jit_get_stats(cpu: *const relevo_cpu, out: *mut jit_stats) {
     // SAFETY: the caller's promise.
-    unsafe {
-        out.write(jit_stats {
-            blocks: 0,
-            insns: 0,
-            runs: 0,
-            bails: 0,
-            interp: 0,
-            flushes: 0,
-            links: 0,
-            dropped: 0,
-            host: 0,
-        })
-    };
+    unsafe { out.write(cpu_mut(cpu.cast_mut()).jit_stats()) };
 }
 
+/// # Safety
+///
+/// See `relevo_map()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn jit_set_movbe(_cpu: *mut relevo_cpu, _on: bool) {}
+pub unsafe extern "C" fn jit_set_movbe(cpu: *mut relevo_cpu, on: bool) {
+    // SAFETY: the caller's promise.
+    unsafe { cpu_mut(cpu) }.jit_set_movbe(on);
+}
 
+/// # Safety
+///
+/// See `relevo_map()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn jit_set_lazy(_cpu: *mut relevo_cpu, _on: bool) {}
+pub unsafe extern "C" fn jit_set_lazy(cpu: *mut relevo_cpu, on: bool) {
+    // SAFETY: the caller's promise.
+    unsafe { cpu_mut(cpu) }.jit_set_lazy(on);
+}
 
+/// # Safety
+///
+/// See `relevo_map()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn jit_translatable(_cpu: *mut relevo_cpu, _pc: u32) -> bool {
-    false
+pub unsafe extern "C" fn jit_translatable(cpu: *mut relevo_cpu, pc: u32) -> bool {
+    // SAFETY: the caller's promise.
+    unsafe { cpu_mut(cpu) }.jit_translatable(pc)
+}
+
+/// The FPU's hidden state: a pending exception's vector (0: none) and
+/// whether FSAVE gives a null frame. Reads it into `pending` and `null`
+/// (unless NULL), then sets it from `set_pending` and `set_null` if `set`
+/// is not 0. For jitdiff and crdiff; the C version has the same.
+///
+/// # Safety
+///
+/// See `relevo_map()`; `pending` and `null` are NULL or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn relevo_test_fpu_state(
+    cpu: *mut relevo_cpu,
+    pending: *mut c_uint,
+    null: *mut bool,
+    set: c_int,
+    set_pending: c_uint,
+    set_null: bool,
+) {
+    // SAFETY: the caller's promise.
+    let c = unsafe { cpu_mut(cpu) };
+    // SAFETY: the caller's promise.
+    unsafe {
+        if !pending.is_null() {
+            pending.write(c.fpu_pending);
+        }
+        if !null.is_null() {
+            null.write(c.fpu_null);
+        }
+    }
+    if set != 0 {
+        c.fpu_pending = set_pending;
+        c.fpu_null = set_null;
+    }
 }
 
 /// Builds the opcode table for `model` and returns how many opcodes two

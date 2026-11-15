@@ -53,8 +53,11 @@ impl Cpu {
     }
 
     /// Code at `[address, address + size)` changed or must be fetched
-    /// again. The interpreter keeps no translated code; the JIT (RR3) will.
-    pub fn invalidate(&mut self, _address: u32, _size: u32) {}
+    /// again. The interpreter keeps no translated code; the JIT drops what
+    /// it made of it.
+    pub fn invalidate(&mut self, address: u32, size: u32) {
+        self.jit_invalidate(address, size);
+    }
 
     /// Instruction cache invalidation: a 16-byte line.
     pub fn invalidate_line(&mut self, address: u32) {

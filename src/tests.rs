@@ -118,7 +118,7 @@ fn table_no_conflicts() {
         Model::M68060,
     ] {
         for fpu in [Fpu::None, Fpu::M68881, Fpu::M68882, Fpu::Internal] {
-            let (_, conflicts) = crate::interp::build_table(model, fpu);
+            let (_, conflicts, _) = crate::interp::build_table(model, fpu);
             assert_eq!(conflicts, 0, "{model:?} {fpu:?}");
         }
     }

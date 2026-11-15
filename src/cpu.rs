@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
 use crate::capi::{Handle, relevo_host};
 use crate::interp::{self, Handler};
+use crate::jit::{Ind, Jit};
 use crate::window::Window;
 
 /// SR bits
@@ -125,7 +126,8 @@ pub struct Regs {
 pub struct Shared {
     pub ipl: AtomicU32,
     pub stop_request: AtomicBool,
-    /// For the JIT (RR3): set with either of the above.
+    /// Set with either of the above: a JIT block that loops on itself
+    /// leaves when it sees it.
     pub attention: AtomicU32,
 }
 
@@ -147,9 +149,41 @@ pub struct Config {
     pub address_mask: u32,
     pub options: u32,
     pub host: relevo_host,
+    /// The JIT engine (else the interpreter)
+    pub jit: bool,
 }
 
+/// The fields translated code reads come first, where a one-byte
+/// displacement reaches them and the registers (see jit/x86_64).
+#[repr(C)]
 pub struct Cpu {
+    /// Left in the current `run()`
+    pub budget: u64,
+    /// Clock cycles, 68000 timing: 4 per bus access of a byte or word (8 for
+    /// a long), counted by the accesses (memory.rs), plus what each handler
+    /// adds for internal operations. Every word of an instruction is counted
+    /// once when fetched: this stands for the 68000 refilling its prefetch
+    /// queue.
+    pub cycles: u64,
+    /// JIT: `shared.attention`, the JIT's map of pages and its cache of
+    /// indirect targets (null without the JIT).
+    pub jit_attn: *const AtomicU32,
+    pub jit_map: *const u8,
+    pub jit_ind: *const Ind,
+    /// JIT: condition codes left in x86 form by translated code, newer
+    /// than those in r.sr (see jit/x86_64/translate.rs). Byte 0: x86 OF;
+    /// byte 1: the low byte of EFLAGS; byte 2: which of N Z V C (CCR bits)
+    /// they give; byte 3: 0, or the low byte of EFLAGS whose CF is X.
+    /// Always 0 outside translated code.
+    pub jit_ccr: u32,
+    /// FPU (interp/fpu.rs): the vector of an enabled exception to take
+    /// before the next floating-point instruction (0: none).
+    pub fpu_pending: u32,
+    /// What the 68000 stacks in a group 0 frame besides the address: the
+    /// instruction register (normally the opcode) and the PC at the fault,
+    /// which depends on how far the instruction got (see interp/ea.rs).
+    pub ir: u16,
+
     pub r: Regs,
 
     pub mem: Window,
@@ -177,18 +211,10 @@ pub struct Cpu {
     pub align_check: bool,
     /// Instructions executed
     pub count: u64,
-    /// Clock cycles, 68000 timing: 4 per bus access of a byte or word (8 for
-    /// a long), counted by the accesses (memory.rs), plus what each handler
-    /// adds for internal operations. Every word of an instruction is counted
-    /// once when fetched: this stands for the 68000 refilling its prefetch
-    /// queue.
-    pub cycles: u64,
     /// Cycles a group 0 exception adds to or takes from the instruction's
     /// count, where the 68000's prefetches are ahead of or behind the words
     /// counted so far (MOVE).
     pub fault_cycles: i32,
-    /// Left in the current `run()`
-    pub budget: u64,
 
     /// Trace: set at the start of an instruction from SR.T1, taken before
     /// the next one unless the instruction cleared it (group 0 and group 1
@@ -199,29 +225,28 @@ pub struct Cpu {
     pub in_insn: bool,
     /// A fault now is a double bus fault
     pub in_group0: bool,
-    /// What the 68000 stacks in a group 0 frame besides the address: the
-    /// instruction register (normally the opcode) and the PC at the fault,
-    /// which depends on how far the instruction got (see interp/ea.rs).
-    pub ir: u16,
+    /// See `ir`.
     pub ae_pc: u32,
     /// Bytes of the access that took a bus error (for the 68010+ frames)
     pub fault_size: u32,
 
-    /// FPU (interp/fpu.rs): the vector of an enabled exception to take
-    /// before the next floating-point instruction (0: none), and whether
-    /// FSAVE gives a null frame (after a reset, until an FPU instruction).
-    pub fpu_pending: u32,
+    /// FPU: whether FSAVE gives a null frame (after a reset, until an FPU
+    /// instruction).
     pub fpu_null: bool,
 
     /// Level 7 is edge triggered
     pub prev_ipl: u32,
 
     pub table: Box<[Handler; 0x10000]>,
+
+    /// The JIT engine, if this CPU runs it
+    pub jit: Option<Box<Jit>>,
 }
 
 impl Cpu {
-    /// A CPU on the window `mem` (already holding the host's memory block).
-    pub fn new(cfg: &Config, mem: Window, shared: Arc<Shared>) -> Cpu {
+    /// A CPU on the window `mem` (already holding the host's memory block);
+    /// None if it asks for the JIT and there is none.
+    pub fn new(cfg: &Config, mem: Window, shared: Arc<Shared>) -> Option<Cpu> {
         let mut addr_mask = cfg.address_mask;
         if addr_mask == 0 {
             addr_mask = if cfg.model <= Model::M68010 {
@@ -234,8 +259,17 @@ impl Cpu {
             Model::M68020 | Model::M68030 | Model::M68040 => 0xF71F, // T1 T0 S M
             _ => 0xA71F,                                             // T1 S
         };
-        let (table, _) = interp::build_table(cfg.model, cfg.fpu);
+        let (table, _, legal) = interp::build_table(cfg.model, cfg.fpu);
+        let jit_attn: *const AtomicU32 = &shared.attention;
         let mut c = Cpu {
+            budget: 0,
+            cycles: 0,
+            jit_attn,
+            jit_map: core::ptr::null(),
+            jit_ind: core::ptr::null(),
+            jit_ccr: 0,
+            fpu_pending: 0,
+            ir: 0,
             r: Regs::default(),
             mem,
             addr_mask,
@@ -253,26 +287,41 @@ impl Cpu {
             halted: false,
             align_check: cfg.model <= Model::M68010,
             count: 0,
-            cycles: 0,
             fault_cycles: 0,
-            budget: 0,
             trace_pending: false,
             in_insn: false,
             in_group0: false,
-            ir: 0,
             ae_pc: 0,
             fault_size: 0,
-            fpu_pending: 0,
             fpu_null: true,
             prev_ipl: 0,
             table,
+            jit: None,
         };
         if cfg.memory_size != 0 {
             c.mem.map(0, cfg.memory_size, crate::window::PAGE_RAM);
         }
+        if cfg.jit && !c.jit_create(legal) {
+            return None;
+        }
         c.r.sr = SR_S | SR_IPL;
         c.fpu_reset();
-        c
+        Some(c)
+    }
+
+    /// The size of the host's memory block.
+    pub fn mem_size(&self) -> u64 {
+        self.mem.size()
+    }
+
+    /// Maps pages (`relevo_map()`); translated code relies on the page
+    /// map, so the JIT drops it all.
+    pub fn map(&mut self, address: u32, size: u64, kind: u8) -> bool {
+        if !self.mem.map(address, size, kind) {
+            return false;
+        }
+        self.jit_flush();
+        true
     }
 
     /// Sets SR as a MOVE to SR does: masks the bits the model lacks and
@@ -316,7 +365,7 @@ impl Cpu {
     /// Runs one instruction in the interpreter (the checks between
     /// instructions are the caller's), counting it against the budget.
     #[inline(always)]
-    fn step(&mut self) -> Res {
+    pub(crate) fn step(&mut self) -> Res {
         let pc = self.r.pc;
         self.insn_pc = pc;
         self.trace_pending = self.r.sr & SR_T1 != 0;
@@ -339,7 +388,7 @@ impl Cpu {
 
     /// Whether `between_insns()` has anything to do.
     #[inline(always)]
-    fn between_needed(&self) -> bool {
+    pub(crate) fn between_needed(&self) -> bool {
         let ipl = self.shared.ipl.load(Relaxed);
         self.trace_pending
             || self.stopped
@@ -376,7 +425,12 @@ impl Cpu {
         self.budget = budget;
         self.exiting = false;
         loop {
-            match self.run_loop() {
+            let r = if self.jit.is_some() {
+                self.jit_run_loop()
+            } else {
+                self.run_loop()
+            };
+            match r {
                 Ok(st) => return st,
                 Err(Fault) => {
                     // A group 0 exception ended the instruction.

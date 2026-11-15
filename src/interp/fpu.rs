@@ -582,6 +582,91 @@ impl Cpu {
     }
 }
 
+// ---- For the JIT ---------------------------------------------------------------
+
+impl Cpu {
+    /// The general FPU instruction at `pc` with command word and effective
+    /// address field `cmd_ea` (cmd | ea << 16), for a translated block:
+    /// FPm to FPn, <ea> to FPn and FPn to <ea>, not packed nor FMOVECR, and
+    /// only what this FPU executes; only when no exception can be taken
+    /// (none pending, none enabled). `value`: the masked address of a
+    /// memory operand the block has checked (and whose An it moves
+    /// itself), or the value of a Dn source. Returns what goes to a Dn
+    /// destination.
+    pub fn fpu_jit_op(&mut self, pc: u32, cmd_ea: u32, value: u32) -> u32 {
+        let cmd = cmd_ea & 0xFFFF;
+        let mode = (cmd_ea >> 19) & 7;
+        let spec = (cmd >> 10) & 7;
+        let size = FMT_SIZE[spec as usize];
+        self.fpu_null = false;
+        self.r.fpiar = pc;
+        if cmd >> 13 == 3 {
+            // FMOVE FPm,<ea>
+            let (w, _) = self.fmove_out_words(spec, cmd, self.r.fp[((cmd >> 7) & 7) as usize]);
+            if mode == 0 {
+                return w[0];
+            }
+            match size {
+                1 => self.mem_write8(value, w[0]),
+                2 => self.mem_write16(value, w[0]),
+                _ => {
+                    for i in 0..size / 4 {
+                        self.mem_write32(value.wrapping_add(4 * i), w[i as usize]);
+                    }
+                }
+            }
+            return 0;
+        }
+        let m = cmd & 0x7F;
+        let (base, prec) = if m >= 0x40 {
+            sd_form(m).unwrap_or((m, 0))
+        } else {
+            (m, 0)
+        };
+        let mut flags = 0;
+        let src = if cmd >> 13 == 0 {
+            self.r.fp[spec as usize]
+        } else {
+            let mut w = [0u32; 3];
+            if mode == 0 {
+                w[0] = value & sz_mask(size);
+            } else {
+                let imm = mode == 7 && (cmd_ea >> 16) & 7 == 4;
+                let addr = if imm { pc.wrapping_add(4) } else { value }; // after the command
+                if size == 1 && !imm {
+                    w[0] = self.mem_read8(addr);
+                } else if size <= 2 {
+                    w[0] = self.mem_read16(addr) & sz_mask(size);
+                } else {
+                    for i in 0..size / 4 {
+                        w[i as usize] = self.mem_read32(addr.wrapping_add(4 * i));
+                    }
+                }
+            }
+            self.convert_in(spec, &w, &mut flags)
+        };
+        self.arith_result(
+            base,
+            prec,
+            opmode_info(base),
+            m,
+            ((cmd >> 7) & 7) as usize,
+            src,
+            flags,
+        );
+        0
+    }
+
+    /// The condition of the FBcc at `pc` with predicate `pred` (0-0x1F), as
+    /// FBcc evaluates it (FPIAR, BSUN in the FPSR), for a translated block.
+    /// Only when no exception can be taken: none pending, BSUN not enabled.
+    pub fn fpu_jit_branch(&mut self, pc: u32, pred: u32) -> bool {
+        self.fpu_null = false;
+        self.r.fpiar = pc;
+        matches!(self.fp_cond(pred), Ok(Some(true)))
+    }
+}
+
 // ---- FMOVEM ------------------------------------------------------------------
 
 /// Opclasses 100 and 101: the control registers (bit 12 FPCR, 11 FPSR, 10

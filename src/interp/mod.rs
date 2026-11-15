@@ -338,10 +338,11 @@ impl OpTable {
     }
 }
 
-/// The table for `model` and `fpu`, and how many opcodes two groups
-/// claimed (0 unless there is a bug). Opcodes the model does not execute go
-/// to the illegal instruction, line A or line F handlers.
-pub fn build_table(model: Model, fpu: Fpu) -> (Box<[Handler; 0x10000]>, u32) {
+/// The table for `model` and `fpu`, how many opcodes two groups claimed (0
+/// unless there is a bug), and which opcodes have a handler of their own
+/// (the JIT translates no other). Opcodes the model does not execute go to
+/// the illegal instruction, line A or line F handlers.
+pub fn build_table(model: Model, fpu: Fpu) -> (Box<[Handler; 0x10000]>, u32, Box<[bool]>) {
     let mut t: Box<[Handler; 0x10000]> = vec![control::op_illegal as Handler; 0x10000]
         .into_boxed_slice()
         .try_into()
@@ -367,5 +368,6 @@ pub fn build_table(model: Model, fpu: Fpu) -> (Box<[Handler; 0x10000]>, u32) {
     m010::fill(&mut tb);
     m020::fill(&mut tb);
     fpu::fill(&mut tb);
-    (tb.t, tb.conflicts)
+    let legal: Box<[bool]> = tb.taken;
+    (tb.t, tb.conflicts, legal)
 }

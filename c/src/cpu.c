@@ -271,3 +271,16 @@ void relevo_write(relevo_cpu *c, uint32_t address, uint32_t value,
     default: break;
     }
 }
+
+void relevo_test_fpu_state(relevo_cpu *c, unsigned *pending, bool *null,
+                           int set, unsigned set_pending, bool set_null)
+{
+    if (pending != NULL)
+        *pending = c->fpu_pending;
+    if (null != NULL)
+        *null = c->fpu_null;
+    if (set) {
+        c->fpu_pending = set_pending;
+        c->fpu_null = set_null;
+    }
+}

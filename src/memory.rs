@@ -7,7 +7,7 @@
 //! pages, unmapped pages, ROM writes and accesses across a page boundary.
 
 use crate::cpu::{ACC_DATA, ACC_READ, ACC_WRITE, Cpu, Res};
-use crate::window::{PAGE_HOST, PAGE_NONE, PAGE_RAM, PAGE_ROM, in_page};
+use crate::window::{PAGE_HOST, PAGE_NONE, PAGE_RAM, PAGE_RAM_CODE, PAGE_ROM, in_page};
 
 impl Cpu {
     // ---- Accesses that never fault (masked here) ----------------------
@@ -66,7 +66,7 @@ impl Cpu {
     /// `size` bytes at the masked address `a`, inside one page.
     fn read_in_page(&mut self, a: u32, size: u32) -> u32 {
         match self.mem.kind(a) {
-            PAGE_RAM | PAGE_ROM => {
+            PAGE_RAM | PAGE_ROM | PAGE_RAM_CODE => {
                 let v = match size {
                     1 => self.mem.read8(a),
                     2 => self.mem.read16(a),
@@ -90,11 +90,11 @@ impl Cpu {
     fn write_in_page(&mut self, a: u32, v: u32, size: u32) {
         match self.mem.kind(a) {
             PAGE_RAM => {
-                match size {
-                    1 => self.mem.write8(a, v),
-                    2 => self.mem.write16(a, v),
-                    _ => self.mem.write32(a, v),
-                };
+                self.mem.write_ram(a, v, size);
+            }
+            PAGE_RAM_CODE => {
+                self.mem.write_ram(a, v, size);
+                self.jit_code_written(a, size);
             }
             PAGE_HOST => self.host_write(a, v, size),
             // ROM: dropped; unmapped: as reads

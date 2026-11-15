@@ -21,6 +21,10 @@ pub const PAGE_NONE: u8 = 0;
 pub const PAGE_RAM: u8 = 1;
 pub const PAGE_ROM: u8 = 2;
 pub const PAGE_HOST: u8 = 3;
+/// An internal kind: RAM holding code the JIT has translated. Reads are
+/// direct; writes take the slow path, which drops the translations they
+/// touch. The JIT's flush turns these pages back into RAM.
+pub const PAGE_RAM_CODE: u8 = 4;
 
 /// Whether `size` bytes at the masked address `a` stay inside one page.
 #[inline(always)]
@@ -28,9 +32,10 @@ pub fn in_page(a: u32, size: u32) -> bool {
     (a & (PAGE_SIZE - 1)) <= PAGE_SIZE - size
 }
 
+/// RAM, ROM or RAM with translated code: read directly.
 #[inline(always)]
-fn direct_read(kind: u8) -> bool {
-    kind == PAGE_RAM || kind == PAGE_ROM
+pub fn direct_read(kind: u8) -> bool {
+    (0b10110 >> kind) & 1 != 0
 }
 
 pub struct Window {
@@ -76,6 +81,34 @@ impl Window {
         let last = (end >> PAGE_SHIFT) as usize;
         self.pages[first..last].fill(kind);
         true
+    }
+
+    /// Marks the RAM page `page` as holding translated code, or (`code`
+    /// false) a page with code back as RAM. Other pages do not change.
+    pub fn set_code(&mut self, page: usize, code: bool) {
+        let k = &mut self.pages[page];
+        if code && *k == PAGE_RAM {
+            *k = PAGE_RAM_CODE;
+        } else if !code && *k == PAGE_RAM_CODE {
+            *k = PAGE_RAM;
+        }
+    }
+
+    /// The kind of page `page` (0 to PAGE_COUNT - 1).
+    #[inline(always)]
+    pub fn page_kind(&self, page: usize) -> u8 {
+        self.pages[page]
+    }
+
+    /// The size of the memory block.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The start of the memory block (null if none): translated code
+    /// addresses the 68k memory from it.
+    pub fn base(&self) -> *mut u8 {
+        self.base
     }
 
     /// The kind of the page of the masked address `a`.
@@ -126,6 +159,28 @@ impl Window {
         } else {
             None
         }
+    }
+
+    /// Writes `size` bytes big-endian to a RAM page or one with code, if
+    /// they do not cross the page's end; false (nothing written)
+    /// otherwise.
+    pub fn write_ram(&mut self, a: u32, v: u32, size: u32) -> bool {
+        let kind = self.kind(a);
+        if (kind != PAGE_RAM && kind != PAGE_RAM_CODE) || !in_page(a, size) {
+            return false;
+        }
+        // SAFETY: see ptr().
+        unsafe {
+            match size {
+                1 => self.ptr(a, 1).write(v as u8),
+                2 => self
+                    .ptr(a, 2)
+                    .cast::<[u8; 2]>()
+                    .write((v as u16).to_be_bytes()),
+                _ => self.ptr(a, 4).cast::<[u8; 4]>().write(v.to_be_bytes()),
+            }
+        }
+        true
     }
 
     /// Writes a byte to a RAM page; false (nothing written) for other pages.

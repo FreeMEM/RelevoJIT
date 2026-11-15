@@ -151,8 +151,7 @@ static void load_state(machine *m, const state *s)
     r->fpcr = s->fpcr;
     r->fpsr = s->fpsr;
     r->fpiar = s->fpiar;
-    m->cpu->fpu_pending = s->fpu_pending;
-    m->cpu->fpu_null = s->fpu_null;
+    relevo_test_fpu_state(m->cpu, NULL, NULL, 1, s->fpu_pending, s->fpu_null);
     m->nlog = 0;
 }
 
@@ -204,11 +203,13 @@ static bool compare(machine *x, machine *y, relevo_status sx,
     CMP(fpsr, "FPSR");
     CMP(fpiar, "FPIAR");
 #undef CMP
-    if (x->cpu->fpu_pending != y->cpu->fpu_pending
-        || x->cpu->fpu_null != y->cpu->fpu_null) {
-        printf("  FPU pending/null: interp %u/%d jit %u/%d\n",
-               x->cpu->fpu_pending, x->cpu->fpu_null, y->cpu->fpu_pending,
-               y->cpu->fpu_null);
+    unsigned xp, yp;
+    bool xn, yn;
+    relevo_test_fpu_state(x->cpu, &xp, &xn, 0, 0, false);
+    relevo_test_fpu_state(y->cpu, &yp, &yn, 0, 0, false);
+    if (xp != yp || xn != yn) {
+        printf("  FPU pending/null: interp %u/%d jit %u/%d\n", xp, xn, yp,
+               yn);
         ok = false;
     }
     if (sx != sy) {
