@@ -10,8 +10,9 @@
 //! FPU with its own extended arithmetic (`fpx`, RR2). The JIT (RR3) comes
 //! next; `relevo_create()` returns NULL for it.
 //!
-//! `unsafe` lives only in two modules: [`capi`] (the C boundary) and
-//! `window` (the 68k memory the host gives). Everything else denies it.
+//! `unsafe` lives only in three modules: [`capi`] (the C boundary), `hooks`
+//! (internal functions the C tests call, with C signatures) and `window`
+//! (the 68k memory the host gives). Everything else denies it.
 #![no_std]
 #![deny(unsafe_code)]
 
@@ -24,6 +25,7 @@ pub mod capi;
 mod cpu;
 mod exception;
 mod fpx;
+mod hooks;
 mod interp;
 mod memory;
 mod window;

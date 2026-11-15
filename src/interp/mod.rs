@@ -274,7 +274,6 @@ pub const EAB_IMM: u32 = 1 << 11; // #imm
 
 pub const EA_ALL: u32 = 0x0FFF;
 pub const EA_DATA: u32 = EA_ALL & !EAB_AREG;
-pub const EA_MEMORY: u32 = EA_DATA & !EAB_DREG;
 pub const EA_CONTROL: u32 = EAB_IND | EAB_D16 | EAB_D8 | EAB_ABSW | EAB_ABSL | EAB_PCD16 | EAB_PCD8;
 pub const EA_ALTERABLE: u32 = EAB_DREG
     | EAB_AREG

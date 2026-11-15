@@ -58,7 +58,7 @@ LIB := $(BUILD)/librelevo.a
 LIB_SRC := $(wildcard c/src/*.c c/src/interp/*.c c/src/jit/*.c c/src/jit/x86_64/*.c)
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
-            tests/test_010.c tests/test_020.c tests/test_json.c \
+            tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c \
             tests/test_sst.c tests/test_jit.c tests/skip_c.c $(TEST_COMMON)
 EXTRA_TOOLS :=
 BENCH_FLAGS ?=
@@ -69,7 +69,7 @@ LIB_OBJ :=
 # --release --crate-type staticlib -- --print native-static-libs).
 LDLIBS += -lgcc_s -lutil -lrt -lpthread -ldl -lc
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
-            tests/test_010.c tests/test_020.c tests/test_json.c \
+            tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c \
             tests/test_sst.c tests/test_jit.c tests/skip_rust.c $(TEST_COMMON)
 EXTRA_TOOLS := $(BUILD)/abi $(BUILD)/crdiff
 # The interpreter only so far (RR2)

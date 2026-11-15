@@ -600,8 +600,11 @@ static void print_fp(const char *name, relevo_fpreg f)
 }
 
 /* Compares the two CPUs; prints what differs (with print). `tol_fp`: the
- * FPU data registers may differ by `ulps` (the instruction was a
- * transcendental function). */
+ * FPU data registers may differ by `ulps` units in the last place of the
+ * FPCR's rounding precision (the instruction was a transcendental
+ * function: C rounds glibc's long double result, Rust its own, closer
+ * one, and Rust rounds once with the FPCR's mode where C rounds to
+ * nearest first). */
 static bool compare_cpus(machine *x, machine *y, relevo_status sx,
                          relevo_status sy, bool tol_fp, bool print)
 {
@@ -623,6 +626,13 @@ static bool compare_cpus(machine *x, machine *y, relevo_status sx,
         if (fp_equal(a->fp[i], b->fp[i]))
             continue;
         uint64_t u = ulp_distance(a->fp[i], b->fp[i]);
+        if (tol_fp && u != UINT64_MAX) {
+            /* in units of the rounding precision of the FPCR: 24 or 53
+             * bits round the mantissa only */
+            unsigned prec = (b->fpcr >> 6) & 3;
+            unsigned shift = prec == 1 ? 40 : prec == 2 ? 11 : 0;
+            u = (u + ((1ull << shift) - 1)) >> shift;
+        }
         if (tol_fp && !strict && u <= ulps) {
             fp_tolerated = true;
             if (u > trans_max_ulps)
