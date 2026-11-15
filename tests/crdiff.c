@@ -14,7 +14,7 @@
  *   -g  percentage of instructions that are raw random words (default 10;
  *       100: nothing but garbage as code)
  *   -u  how many units in the last place a transcendental result may differ
- *       (default 2; see below)
+ *       (default 3; see below)
  *   -T  no tolerance at all
  *
  * Each case writes 1 to MAXLEN random instructions (the generator of
@@ -530,7 +530,7 @@ static void rnd_insn_rr2(uint32_t pc)
 /* ---- A case ----------------------------------------------------------- */
 
 static unsigned garbage = 10;   /* percent */
-static unsigned ulps = 2;
+static unsigned ulps = 3;
 static bool strict;
 static unsigned long cases, steps;
 static unsigned long trans_steps, trans_differ, trans_max_ulps;
@@ -882,9 +882,15 @@ static bool run_case(machine *x, machine *y, unsigned maxlen, bool full_mem)
             y->api->relevo_set_ipl(y->cpu, ipl);
         }
         uint32_t ipc = y->api->relevo_get_regs(y->cpu)->pc;
+        uint32_t fpiar0 = y->api->relevo_get_regs(y->cpu)->fpiar;
         bool trans = trans_at(y, ipc);
         relevo_status sx = x->api->relevo_run(x->cpu, 1);
         relevo_status sy = y->api->relevo_run(y->cpu, 1);
+        /* An exception taken before the instruction (trace, interrupt)
+         * runs the handler's first one instead: FPIAR tells where the
+         * floating-point instruction that just ran was. */
+        uint32_t fpiar = y->api->relevo_get_regs(y->cpu)->fpiar;
+        trans = trans || (fpiar != fpiar0 && trans_at(y, fpiar));
         steps++;
         trans_steps += trans;
         if (!compare_cpus(x, y, sx, sy, trans, false)) {

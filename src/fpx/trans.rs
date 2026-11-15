@@ -689,9 +689,10 @@ fn integral(x: W) -> Option<i64> {
     Some(if x.neg { -v } else { v })
 }
 
-/// 10^n exactly, n in 0..=27 (fits 64 bits).
-fn pow10(n: i64) -> u64 {
-    (0..n).fold(1u64, |v, _| v * 10)
+/// 10^n exactly, n in 0..=27 (up to 90 bits; its odd part, 5^n, fits
+/// the 64-bit mantissa).
+fn pow10(n: i64) -> W {
+    W::norm(false, 127, (0..n).fold(1u128, |v, _| v * 10))
 }
 
 /// The transcendental function `f` of `a`, rounded with the environment.
@@ -850,7 +851,9 @@ pub fn trans(e: &mut Env, f: Func, a: Fpx) -> Fpx {
                 // exact (or the overflow and underflow of the range)
                 (Func::Twotox, Some(n)) => return pack(e, false, n as i32, TOP, 0),
                 (Func::Tentox, Some(n)) if (0..=27).contains(&n) => {
-                    return exact_int(e, pow10(n) as i64);
+                    // exact: no sticky bit, unlike to_fpx()
+                    let p = pow10(n);
+                    return pack(e, false, p.e, (p.m >> 64) as u64, p.m as u64);
                 }
                 _ => {}
             }
@@ -924,7 +927,7 @@ pub fn trans(e: &mut Env, f: Func, a: Fpx) -> Fpx {
                 _ => {
                     // exact for 10^0 .. 10^27
                     for n in 1..=27 {
-                        let p = W::from_i64(pow10(n) as i64);
+                        let p = pow10(n);
                         if p.e == x.e && p.m == x.m {
                             return exact_int(e, n);
                         }

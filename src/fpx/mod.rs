@@ -1038,6 +1038,19 @@ mod tests {
         );
         assert_eq!(trans(&mut e, Func::Acos, ONE), x(0, 0));
         assert_eq!(e.flags, 0);
+        // 10^n and log10(10^n) for every n up to 27, 10^27 included (beyond
+        // 64 bits, its mantissa is not)
+        let ten = from_int(&mut e, 10);
+        let mut p = ONE;
+        for n in 0..=27 {
+            let nx = from_int(&mut e, n);
+            assert_eq!(trans(&mut e, Func::Tentox, nx), p, "10^{n}");
+            assert_eq!(trans(&mut e, Func::Log10, p), nx);
+            if n < 27 {
+                p = mul(&mut e, p, ten);
+            }
+        }
+        assert_eq!(e.flags, 0);
         // huge arguments: sin(2^16000) and cos, reduced exactly
         let big = x(0x3FFF + 16000, TOP);
         let s = trans(&mut e, Func::Sin, big);
