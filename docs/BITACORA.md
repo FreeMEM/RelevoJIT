@@ -694,3 +694,83 @@ Ficheros comunes tocados: `src/cpu.h` (campo `jit_ccr`; `fpu_jit_branch` y `fpu_
 (lo de arriba), `Makefile` (tandas de `jitdiff`), `README.md`, `docs/DISEÑO.md`, `tests/tests.h`, `tests/bench.c`,
 `tests/jitdiff.c` y `tests/test_jit.c`. No se tocaron `include/relevo.h`, `cpu.c`, `memory.c`, `exception.c`,
 `interp.h` ni `table.c`.
+
+### 2026-11-15 — RR0 y RR1: el crate en Rust y el intérprete del 68000
+
+Plan en `docs/REESCRITURA.md`. Rama `rust`.
+
+Hecho:
+
+- RR0. La versión en C pasa a `c/src` (`git mv`). El `Makefile` compila las dos: `IMPL=rust` (por defecto; llama a
+  `cargo build --release` y enlaza `target/release/librelevo.a`) o `IMPL=c`, con los objetos en `build/rust/` y
+  `build/c/`. Cualquier objetivo con `c-` delante es el de la versión en C (`make c-test`, `make c-sst`...).
+- Crate `relevo` (edición 2024), `no_std` con `alloc` y la característica `std` por defecto; rlib, staticlib y
+  cdylib. `src/capi.rs` exporta `relevo.h` con la misma ABI. `tests/abi.c` compara 56 tamaños y desplazamientos con
+  los que da la biblioteca (`relevo_abi_layout()`, fuera de la interfaz); en 64 bits también se comprueban al compilar.
+- `unsafe` solo en `capi.rs` (la frontera C y las llamadas al anfitrión) y `window.rs` (el puntero a la memoria del
+  68k y la tabla de páginas, privada, con su invariante: una página RAM o ROM está entera dentro del bloque). El
+  resto, `deny(unsafe_code)`; las pruebas en Rust también lo permiten, porque llaman a la interfaz C.
+- Un `relevo_cpu *` es un `Handle`: la parte que tocan otros hilos (`relevo_set_ipl`, `relevo_request_stop`:
+  atómicos) va aparte de la `Cpu`, que es del hilo que la ejecuta. Antes de llamar a una función del anfitrión, el
+  puntero de la CPU pasa por `black_box`: el anfitrión puede volver a entrar en la interfaz con su puntero
+  (`relevo_get_regs`, `relevo_read`...), y el compilador no debe suponer que la CPU sigue igual tras la llamada.
+- RR1. El intérprete del 68000, traducido de la versión en C: la misma tabla de 65 536 manejadores, los mismos
+  accesos por páginas de 64 KB, las mismas reglas de PC y de ciclos sacadas de SingleStepTests. Los fallos de grupo 0
+  (error de dirección y de bus, doble fallo) ya no usan `longjmp`: cada acceso devuelve `Result` y los manejadores lo
+  suben con `?` hasta el bucle. Los tamaños y las operaciones son genéricos `const` (`op_move::<SZ_W>`,
+  `ea_to_dreg::<ALU_ADD, SZ_L>`) en vez de envoltorios.
+- `relevo_create()` da NULL para los 68010 a 68060, la FPU y el JIT. Las funciones internas que usan las pruebas en
+  C (`jit_available`, `jit_get_stats`, `jit_set_movbe`, `jit_set_lazy`, `jit_translatable`, `interp_fill_table`)
+  tienen sustitutos en Rust.
+- Cambios en las pruebas en C, solo lo imprescindible: los `#include "../src/..."` pasan a `"cpu.h"`, `"jit/jit.h"`...
+  (con `-Ic/src`); `tests/main.c` salta con aviso las pruebas de una lista (`tests/skip_c.c`, vacía, y
+  `tests/skip_rust.c`: 73 que piden RR2 o RR3; `test_020.c` y `test_fpu.c` no se compilan contra Rust porque llaman
+  a `cache_write_cacr` y a `fpx_*`); `tests/bench.c` da los MIPS del intérprete aunque no haya JIT; `tests/abi.c`,
+  nueva. `tools/oraculo/oraculo.py` toma la ruta de `oraculo` de `RELEVO_ORACULO`.
+- `make test` con Rust salta, con aviso, el banco del oráculo (68020 y 68040), `jitdiff` y `sst -j`. `make bench`
+  usa `-m 68000`.
+- Pruebas en Rust (`cargo test`, 10): las partes del 68000 de las pruebas de `test_api.c` que se saltan (validación,
+  páginas, cruce de página, máscara, `RTS` a 0, pilas, CPU independientes), una interrupción desde otro hilo que
+  despierta un `STOP`, la tabla sin conflictos y los nombres de la ABI.
+- CI: las dos versiones, `cargo clippy -D warnings` y `cargo test` (cambiado; no lo he visto correr en GitHub).
+
+Comprobado:
+
+- `make test` (Rust): ABI 56/56, `run_tests` 28/28 con 73 saltadas, `sst` de `NOP`. También con clang, ASan y UBSan
+  en el código de las pruebas.
+- `make sst` (Rust): 317 500 de 317 500, ciclos exactos en todas.
+- La biblioteca en modo depuración (con comprobación de desbordamientos): SingleStepTests entero, `run_tests` y
+  `bench` iguales, sin pánicos.
+- `cargo test` 10/10, `cargo clippy --all-targets` sin avisos, `cargo fmt`. Sin `std`: `cargo rustc --lib
+  --no-default-features --crate-type rlib` compila (staticlib y cdylib necesitan `std`: el asignador y el pánico).
+- La versión en C desde `c/`: `make c-test` como antes (101/101, oráculo con los dos motores, `jitdiff`) y
+  `make c-sst` 317 500/317 500.
+- Sin probar: la CI en GitHub y Windows.
+
+Velocidad del intérprete (`make bench` y `make c-bench`, `-m 68000`, gcc -O2 para C, millones de instrucciones 68k
+por segundo, el mejor de tres):
+
+| Programa | C | Rust |
+|---|---|---|
+| Bucle aritmético | 123 | 201 |
+| Copia de memoria | 118 | 144 |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 132 | 192 |
+| Página del anfitrión | 101 | 151 |
+
+Rust sale entre 1,2 y 1,6 veces más rápido. No lo he desglosado; las causas probables: solo tiene el camino del
+68000 (la de C mira el modelo al decodificar y el tipo de página del JIT), compila con LTO y una unidad, y los
+genéricos `const` dan un manejador por tamaño y operación. RR2 añadirá las comprobaciones de modelo: hay que volver a
+medir. No probé un `match` sobre el código de operación en vez de la tabla: la tabla ya supera a la de C.
+
+Queda para RR2:
+
+- 68010 a 68060 sin MMU: la tabla por modelo (`OpTable` vuelve a necesitar el modelo), VBR, `MOVEC`, `MOVES`, `RTD`,
+  `MOVE from CCR`, `MOVE from SR` privilegiado, marcos de formato 0, 2, 8, B, 7, 1 (pila maestra) y `RTE` con
+  formatos y error de formato, banderas de división por cero por modelo, `CHK` del 020, modos del 020 (índice
+  escalado, palabra completa, indirectos, `ea_illegal`), sus instrucciones, `Bcc.L`, caché (`CACR`, `CINV`, `CPUSH`,
+  `MOVE16`) y la FPU con `fpx` en Rust.
+- Quitar las saltadas de `tests/skip_rust.c`. `test_020.c` y `test_fpu.c` llaman a `cache_write_cacr` y `fpx_*`:
+  exportarlas como ganchos de prueba o pasar esas pruebas a Rust.
+- El banco del oráculo con la biblioteca de Rust.
+- Para RR4: las pruebas incluyen `c/src/cpu.h` (constantes `VEC_*`; `jitdiff` lee `cpu->fpu_pending`). Al retirar
+  `c/` hará falta una cabecera de pruebas propia.

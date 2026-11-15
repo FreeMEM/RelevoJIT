@@ -24,13 +24,17 @@ versión en C.
 
 ## Pasos
 
-| Paso | Qué | Hecho cuando |
-|---|---|---|
-| RR0 | Crate, compilación (Makefile llama a cargo), la interfaz C completa con stubs | Las pruebas en C enlazan contra la biblioteca de Rust |
-| RR1 | Intérprete 68000, excepciones, ciclos | SingleStepTests 317 500/317 500 con ciclos |
-| RR2 | 68010 a 68040 (sin MMU) y la FPU (`fpx`) | Pruebas propias y banco del oráculo iguales |
-| RR3 | JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, FPU) | `jitdiff`, `sst JIT=1` y `bench` sin bajar |
-| RR4 | Diferencial al azar C contra Rust; se retira la versión en C | Millones de casos iguales |
+| Paso | Qué | Hecho cuando | Estado |
+|---|---|---|---|
+| RR0 | Crate, compilación (Makefile llama a cargo), la interfaz C completa con stubs | Las pruebas en C enlazan contra la biblioteca de Rust | [x] 2026-11-15 |
+| RR1 | Intérprete 68000, excepciones, ciclos | SingleStepTests 317 500/317 500 con ciclos | [x] 2026-11-15 |
+| RR2 | 68010 a 68040 (sin MMU) y la FPU (`fpx`) | Pruebas propias y banco del oráculo iguales | [ ] |
+| RR3 | JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, FPU) | `jitdiff`, `sst JIT=1` y `bench` sin bajar | [ ] |
+| RR4 | Diferencial al azar C contra Rust; se retira la versión en C | Millones de casos iguales | [ ] |
+
+Cómo va (RR0 y RR1, ver la bitácora del 2026-11-15): `make` compila el crate y enlaza contra él las pruebas en C;
+`make c-test` (cualquier objetivo con `c-` delante) hace lo mismo con la versión en C de `c/`. Lo que la de Rust no
+tiene aún se salta con aviso (`tests/skip_rust.c` y el `Makefile`).
 
 Después siguen V2 a V9 de `REVISION.md` (programas reales, aguante, x87, memoria por fallos de página, 68060,
 MMU), ya en Rust.
