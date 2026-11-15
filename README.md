@@ -3,8 +3,9 @@
 A Motorola 680x0 interpreter and x86-64 JIT, as a C library.
 
 It is being rewritten in Rust (`docs/REESCRITURA.md`, Spanish): the crate in `src/` exports the same C interface,
-and the same tests run against both. The Rust version has the interpreter (68000 to 68060 and the FPU) so far;
-the C version, in `c/`, has everything described below, the JIT too, until the Rust one catches up.
+and the same tests run against both. The Rust version has everything described below: the interpreter (68000 to
+68060 and the FPU) and the x86-64 JIT. The C version stays in `c/` as the reference until a long random
+differential run retires it.
 
 RelevoJIT runs 68k code on x86-64 machines. The 68k memory stays big-endian, as on the real CPU; the JIT swaps
 bytes on every access (`MOVBE` where available). It knows nothing about any particular computer: the host gives it
@@ -33,6 +34,7 @@ make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
 make sst          # run every SingleStepTests file: passed/total per instruction, and cycles
 make sst JIT=1    # the same on the JIT engine
 make jitdiff      # a long random differential run, JIT against interpreter
+make crdiff       # the Rust library against the C one: interpreters, and the JITs
 make bench        # speed of the JIT against the interpreter
 make oraculo      # regenerate the bench against FS-UAE with the real Kickstart (tools/oraculo)
 ```

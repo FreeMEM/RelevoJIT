@@ -29,13 +29,14 @@ versión en C.
 | RR0 | Crate, compilación (Makefile llama a cargo), la interfaz C completa con stubs | Las pruebas en C enlazan contra la biblioteca de Rust | [x] 2026-11-15 |
 | RR1 | Intérprete 68000, excepciones, ciclos | SingleStepTests 317 500/317 500 con ciclos | [x] 2026-11-15 |
 | RR2 | 68010 a 68040 (sin MMU) y la FPU (`fpx`) | Pruebas propias y banco del oráculo iguales | [x] 2026-11-15 |
-| RR3 | JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, FPU) | `jitdiff`, `sst JIT=1` y `bench` sin bajar | [ ] |
+| RR3 | JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, FPU) | `jitdiff`, `sst JIT=1` y `bench` sin bajar | [x] 2026-11-15 |
 | RR4 | Diferencial al azar C contra Rust; se retira la versión en C | Millones de casos iguales | [ ] |
 
-Cómo va (RR0 a RR2, ver la bitácora del 2026-11-15): `make` compila el crate y enlaza contra él las pruebas en C;
-`make c-test` (cualquier objetivo con `c-` delante) hace lo mismo con la versión en C de `c/`. Lo que la de Rust no
-tiene aún (el JIT) se salta con aviso (`tests/skip_rust.c` y el `Makefile`). `make crdiff` ya compara las dos
-bibliotecas con código al azar en todos los modelos (el diferencial de RR4, adelantado a RR2).
+Cómo va (RR0 a RR3, ver la bitácora del 2026-11-15): `make` compila el crate y enlaza contra él las pruebas en C;
+`make c-test` (cualquier objetivo con `c-` delante) hace lo mismo con la versión en C de `c/`. Desde RR3 la de Rust
+lo tiene todo y `make test` corre lo mismo con las dos (nada se salta). `make crdiff` compara las dos bibliotecas con
+código al azar en todos los modelos: los intérpretes paso a paso, y el JIT de Rust contra el intérprete de C
+(`-J rust`) y contra el JIT de C (`-J both`).
 
 Después siguen V2 a V9 de `REVISION.md` (programas reales, aguante, x87, memoria por fallos de página, 68060,
 MMU), ya en Rust.

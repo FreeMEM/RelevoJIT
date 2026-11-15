@@ -875,3 +875,87 @@ No hecho:
 
 Queda para RR3: el JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, la FPU desde el bloque), `jitdiff`,
 `sst JIT=1`, el oráculo con `-j` y `bench` con el JIT. Las 18 pruebas de `test_jit.c`.
+
+### 2026-11-15 — RR3: el JIT x86-64 en Rust
+
+Hecho:
+
+- El JIT de `c/src/jit` traducido a Rust, con el diseño y las capacidades de R7, en `src/jit/`: `mod.rs` (el
+  despachador: bloques en un arena con índices, caché por dirección, páginas de 4 KB con trozos de 64 bytes con
+  código, invalidación al escribir, encadenado con parcheo, caché de destinos indirectos, `jit_access_check`,
+  `jit_host_step`), `decode.rs` (el decodificador), `x86_64/emit.rs` (el emisor, que escribe en un `Vec`) y
+  `x86_64/translate.rs` (el generador: dos fases con salida "bail", banderas pendientes en EFLAGS y el registro con
+  `LAHF`/`SETO`, o sin él si la CPU no tiene `LAHF` en 64 bits; `MOVBE` o `BSWAP` según CPUID; páginas del anfitrión
+  desde el bloque; la FPU común llamando a `fpu_jit_op`/`fpu_jit_branch`, nuevas en `interp/fpu.rs`). Las
+  instrucciones `Kind::Call` llaman al manejador del intérprete por la tabla de la CPU.
+- `unsafe` solo en `jit/codemem.rs` (memfd con doble proyección o `mprotect`; `VirtualAlloc` y una sección
+  proyectada dos veces en Windows, sin probar, como en C; cada escritura comprobada contra la proyección) y
+  `jit/native.rs` (la llamada al trampolín, las retrollamadas y CPUID). El resto, `deny(unsafe_code)`.
+- Una convención para todo: las retrollamadas son `extern "sysv64"`, también en Windows; el generador ya no tiene
+  rama para Microsoft x64. La entrada y los fallos: `jit_host_step` recibe el `Err(Fault)` de `step()` en vez de un
+  `setjmp` (el parámetro `may_fault` queda sin uso en Rust).
+- La `Cpu` es `#[repr(C)]` con lo que lee el código traducido delante (presupuesto, ciclos, punteros al mapa y a la
+  caché indirecta, el registro de banderas, `fpu_pending`, IR) y los registros detrás: todo con desplazamiento de
+  un byte desde RBX. La parte compartida (`Shared`) deja el `Arc` y va en la `Handle` justo antes de la `Cpu`: la
+  atención se mira con `cmp [rbx-8],0`, como C. La `Cpu` la ve por `SharedRef` (en `capi.rs`).
+- La ventana gana el tipo de página interno `PAGE_RAM_CODE`; las escrituras en él van por el camino lento, que
+  avisa al JIT. `build_table` da además qué códigos tienen manejador propio (el decodificador no traduce los
+  demás, en vez de comparar punteros a función como C).
+- Pruebas: las 18 de `test_jit.c` ya no se saltan. `relevo_test_fpu_state()` (en las dos bibliotecas, fuera de la
+  interfaz) lee y pone `fpu_pending` y `fpu_null`; `jitdiff` lo usa en vez de leer la estructura de C. `make test`
+  corre lo mismo con Rust que con C (oráculo con `-j`, `jitdiff`, `sst -j`) más `crdiff`.
+- `crdiff -J rust` (JIT de Rust contra intérprete de C) y `-J both` (contra el JIT de C): cada caso corre su
+  presupuesto de una vez y se compara al final, los ciclos solo con el mismo motor; el generador deja fuera las
+  transcendentales (`gen_no_trans`). Si hay diferencia, busca el presupuesto mínimo y muestra los pasos. El estado
+  oculto de la FPU empieza al azar y se compara también en el modo paso a paso.
+- `bench` comparaba `relevo_fpreg` con `memcmp`, relleno incluido; ahora campo a campo.
+- El crate compila para `aarch64-unknown-none` (sin el JIT: las retrollamadas solo existen en x86-64).
+
+Fallo encontrado (en los dos JIT, frente a los dos intérpretes; corregido en C y en Rust): un error de bus al
+atender una interrupción (VBR a una página vacía) apilaba en el marco del 68010+ el `insn_pc` de la última
+instrucción del intérprete, y el 68000 el `ae_pc`; dentro de un bloque el JIT no los actualiza, así que salían
+distintos. Ahora, antes de atender la interrupción, valen como si empezara la instrucción interrumpida. `jitdiff`
+no lo veía porque siempre usa VBR 0 y ningún nivel al empezar.
+
+Comprobado:
+
+- `make test` (Rust: ABI, 101/101 pruebas, oráculo con los dos motores, `jitdiff`, `crdiff` con y sin JIT, NOP de
+  SingleStepTests con los dos motores) y `make c-test`, con gcc 16 y con clang. `cargo test` 13/13, `cargo clippy
+  --all-targets -D warnings` sin avisos, `cargo fmt`. Sin `std` compila (para x86-64 y aarch64); sin `std` no hay
+  memoria de código, así que no hay JIT.
+- `make sst JIT=1`: 317 500/317 500. `make jitdiff`: 25 tandas, 2,75 millones de casos, iguales; las
+  estadísticas (bloques, salidas, pasos del anfitrión) coinciden con las del JIT de C con la misma semilla.
+- `make crdiff`: 88 tandas, 9,46 millones de casos (102,8 millones de instrucciones), todos iguales; de ellos 2,86
+  millones con el JIT de Rust contra el intérprete de C y contra el JIT de C.
+- La biblioteca en modo depuración (desbordamientos comprobados): `jitdiff` en 68000, 68020 y 68040 sin pánicos.
+- Sin probar: Windows (ni compilado: no hay objetivo aquí) y el camino de `mprotect` sin memfd.
+
+Velocidad (`make bench` y `make c-bench`, 68020, millones de instrucciones 68k por segundo, el mejor de diez,
+intercalados y en un solo núcleo; la máquina tenía carga de otros procesos):
+
+| Programa | Intérprete C | Intérprete Rust | JIT C (gcc) | JIT C (clang) | JIT Rust |
+|---|---|---|---|---|---|
+| Bucle aritmético | 123 | 195 | 3616 | 3607 | 6004 |
+| Copia de memoria | 117 | 141 | 1783 | 1785 | 1755 |
+| Bytes con `CMP`, `Bcc`, `BSR` y `RTS` | 130 | 190 | 3189 | 3158 | 3130 |
+| Coma flotante | 50 | 62 | 74 | 73 | 93 |
+| Página del anfitrión | 103 | 147 | 143 | 134 | 174 |
+
+El código generado es el mismo que el de C salvo los desplazamientos (más cortos) y, al principio, la atención
+cargada por un puntero: eso costaba un 9 % en "bytes" (muchos bloques cortos) y se quitó. Aritmética sube 1,7 veces
+por los desplazamientos de un byte (cambia también con la colocación: de 5960 a 6560 moviendo los bloques). FPU y
+anfitrión suben por la parte de Rust (`fpx`, el paso del intérprete). Copia y bytes quedan un 1-2 % por debajo de
+C: es colocación del código en este Zen 5. Con el mismo código, mover la etiqueta del bucle de copia entre 0 y 15
+bytes da de 1663 a 1779; alinear el bucle a 32, mover las variables de la CPU a otras líneas de caché o desplazar
+todos los bloques no cambia la copia. No lo he forzado con relleno: depende de la CPU.
+
+Queda para RR4:
+
+- El diferencial largo C contra Rust para retirar `c/` (ya existe: `make crdiff`, también con los JIT) y una
+  cabecera de pruebas propia: `jitdiff` y `test_jit.c` incluyen `c/src/jit/jit.h` (y por él `cpu.h`) para
+  `jit_stats` y `relevo_test_fpu_state`.
+- Sin `std` no hay JIT: DashOS en x86 (sin libc) necesitará que el anfitrión dé la memoria ejecutable (una interfaz
+  para ello).
+- Windows: compilar y probar la memoria de código y la convención System V de las retrollamadas.
+- Lo que ya faltaba en C sigue igual en el JIT (ver R7: transcendentales y `FMOVEM` en el intérprete, MOVE con SR,
+  `TRAP`, `RTE`, `CHK2`, `CAS2`... cortan el bloque).
