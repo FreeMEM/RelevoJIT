@@ -9,8 +9,10 @@ repository = "https://github.com/FreeMEM/RelevoJIT"
 publish = false
 
 [lib]
-# rlib for Rust users (DashOS), staticlib and cdylib for C (include/relevo.h)
-crate-type = ["rlib", "staticlib", "cdylib"]
+# rlib only, so that a no_std user (DashOS) can depend on the crate: a
+# staticlib needs a panic handler and an allocator. The Makefile builds the
+# staticlib for C (include/relevo.h) with cargo rustc --crate-type staticlib.
+crate-type = ["rlib"]
 
 [features]
 default = ["std"]

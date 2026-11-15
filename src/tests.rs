@@ -46,6 +46,7 @@ fn zeroed_config() -> relevo_config {
             line_f: None,
             reset: None,
         },
+        code_memory: null(),
     }
 }
 
@@ -332,4 +333,98 @@ fn abi_layout_names() {
         core::mem::offset_of!(relevo_regs, pcr) as u64
     );
     assert_eq!(unsafe { relevo_abi_layout(c"nothing".as_ptr()) }, u64::MAX);
+}
+
+/// What the JIT asked of a host's code memory (see the next test).
+#[derive(Default)]
+struct HostCode {
+    block: Vec<u8>,
+    maps: u32,
+    unmaps: u32,
+    begins: u32,
+    ends: Vec<(usize, usize)>,
+    fail: bool,
+}
+
+unsafe extern "C" fn hc_map(
+    ctx: *mut c_void,
+    size: usize,
+    rw: *mut *mut c_void,
+    rx: *mut *mut c_void,
+) -> core::ffi::c_int {
+    let h = unsafe { &mut *ctx.cast::<HostCode>() };
+    h.maps += 1;
+    if h.fail {
+        return -1;
+    }
+    h.block = vec![0; size];
+    let p = h.block.as_mut_ptr().cast();
+    unsafe {
+        *rw = p;
+        *rx = p;
+    }
+    0
+}
+
+unsafe extern "C" fn hc_unmap(ctx: *mut c_void, rw: *mut c_void, rx: *mut c_void, size: usize) {
+    let h = unsafe { &mut *ctx.cast::<HostCode>() };
+    assert_eq!(
+        (rw, rx, size),
+        (h.block.as_mut_ptr().cast(), rw, h.block.len())
+    );
+    h.unmaps += 1;
+}
+
+unsafe extern "C" fn hc_begin(ctx: *mut c_void) -> core::ffi::c_int {
+    unsafe { &mut *ctx.cast::<HostCode>() }.begins += 1;
+    0
+}
+
+unsafe extern "C" fn hc_end(ctx: *mut c_void, offset: usize, size: usize) {
+    unsafe { &mut *ctx.cast::<HostCode>() }
+        .ends
+        .push((offset, size));
+}
+
+/// The host's code memory (relevo_config.code_memory): asked for at
+/// creation, the trampoline written through it, given back at the end; and
+/// no CPU when it is not valid or map() fails. Nothing runs from it here
+/// (it is not executable: the C tests run code from a host's memory).
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn host_code_memory() {
+    let mut h = HostCode::default();
+    let mut table = relevo_code_memory {
+        ctx: (&raw mut h).cast(),
+        size: 1 << 20,
+        map: Some(hc_map),
+        unmap: Some(hc_unmap),
+        begin_write: Some(hc_begin),
+        end_write: Some(hc_end),
+    };
+    let mut mem = vec![0u8; MEM_SIZE];
+    let mut cfg = zeroed_config();
+    cfg.memory = mem.as_mut_ptr();
+    cfg.memory_size = MEM_SIZE;
+    cfg.engine = 1;
+    cfg.code_memory = &table;
+    let cpu = unsafe { relevo_create(&cfg) };
+    assert!(!cpu.is_null());
+    unsafe { relevo_destroy(cpu) };
+    assert_eq!((h.maps, h.unmaps, h.begins), (1, 1, 1));
+    assert_eq!(h.block.len(), 1 << 20);
+    assert_eq!(h.ends.len(), 1);
+    assert_eq!(h.ends[0].0, 0);
+    assert!(h.ends[0].1 > 0 && h.block[..h.ends[0].1].iter().any(|&b| b != 0));
+
+    h.fail = true;
+    assert!(unsafe { relevo_create(&cfg) }.is_null());
+    assert_eq!((h.maps, h.unmaps), (2, 1));
+    h.fail = false;
+    for size in [4096, 0x10800, 2 << 30] {
+        table.size = size;
+        cfg.code_memory = &table;
+        assert!(unsafe { relevo_create(&cfg) }.is_null());
+    }
+    assert_eq!(h.maps, 2);
 }

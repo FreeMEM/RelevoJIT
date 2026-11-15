@@ -50,6 +50,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering::Relaxed;
 
+use crate::capi::relevo_code_memory;
 use crate::cpu::{Cpu, Fpu, Model, OPT_EXIT_ON_PC_ZERO, Res, SR_T1, SR_X, Status};
 use crate::window::{
     PAGE_COUNT, PAGE_NONE, PAGE_RAM, PAGE_RAM_CODE, PAGE_ROM, PAGE_SHIFT, PAGE_SIZE, Window,
@@ -279,12 +280,16 @@ pub fn available() -> bool {
 }
 
 impl Jit {
-    /// The JIT for a CPU, or None if there is no executable memory.
-    fn new(cpu: &Cpu, legal: Box<[bool]>) -> Option<Box<Jit>> {
+    /// The JIT for a CPU, or None if there is no executable memory. The
+    /// host's code memory if it gives one, else the system's.
+    fn new(cpu: &Cpu, legal: Box<[bool]>, host: Option<relevo_code_memory>) -> Option<Box<Jit>> {
         if !available() {
             return None;
         }
-        let mut mem = CodeMem::new(CODE_SIZE)?;
+        let mut mem = match host {
+            Some(h) => CodeMem::from_host(h, if h.size != 0 { h.size } else { CODE_SIZE })?,
+            None => CodeMem::new(CODE_SIZE)?,
+        };
         let cb = native::callbacks();
         let has_movbe = native::has_movbe();
         let has_lahf = native::has_lahf();
@@ -809,8 +814,8 @@ impl Cpu {
 
     /// Sets up the JIT engine. Returns false if there is no executable
     /// memory.
-    pub fn jit_create(&mut self, legal: Box<[bool]>) -> bool {
-        let Some(mut j) = Jit::new(self, legal) else {
+    pub fn jit_create(&mut self, legal: Box<[bool]>, host: Option<relevo_code_memory>) -> bool {
+        let Some(mut j) = Jit::new(self, legal, host) else {
             return false;
         };
         j.rebuild_map(&mut self.mem);

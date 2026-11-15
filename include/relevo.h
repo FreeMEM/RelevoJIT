@@ -110,6 +110,49 @@ typedef struct relevo_host {
     void (*reset)(void *ctx);
 } relevo_host;
 
+/* Executable memory for the JIT, given by the host. Optional: without it
+ * (relevo_config.code_memory NULL) the library asks the system for it on
+ * Linux, other Unix systems and Windows (two mappings of a memfd or a
+ * section); built without its `std` feature there is no such default, and
+ * the JIT engine needs this.
+ *
+ * The memory has two views of the same bytes, so that no page is ever
+ * writable and executable at once (W^X): `rw`, where the JIT writes its
+ * code, and `rx`, where the same bytes run. A host that can only toggle the
+ * protection of one view gives the same address for both and switches it
+ * in begin_write() and end_write(). The functions run on the thread that
+ * calls relevo_create(), relevo_run() (and the API from host functions) or
+ * relevo_destroy(). */
+typedef struct relevo_code_memory {
+    void *ctx;      /* passed back to every function */
+
+    /* Bytes to ask for; 0 means the default, 32 MB. A multiple of 4 KB, at
+     * least 64 KB. When it is full, every translation is dropped and the
+     * JIT starts again from the beginning. */
+    size_t size;
+
+    /* Required. Makes `size` bytes of code memory and puts the address of
+     * the writable view in *rw and of the executable one in *rx. Returns 0,
+     * or anything else if it cannot (then relevo_create() fails). */
+    int (*map)(void *ctx, size_t size, void **rw, void **rx);
+
+    /* Undoes map(), from relevo_destroy() or when relevo_create() fails
+     * after map(). */
+    void (*unmap)(void *ctx, void *rw, void *rx, size_t size);
+
+    /* Called before the JIT writes into `rw` (once for a group of writes).
+     * Returns 0 if the JIT may write now; otherwise it does not, and runs
+     * that code in the interpreter. */
+    int (*begin_write)(void *ctx);
+
+    /* Called after the writes, before any of the new bytes run: the bytes
+     * in [offset, offset + size) of the memory changed (size 0 if none
+     * did). Where the CPU needs it, the host flushes its caches or
+     * serializes here (x86: a serializing instruction such as CPUID, since
+     * the code was written through another linear address). */
+    void (*end_write)(void *ctx, size_t offset, size_t size);
+} relevo_code_memory;
+
 /* relevo_config.options */
 
 /* relevo_run() returns RELEVO_EXIT_PC_ZERO as soon as an instruction leaves
@@ -135,6 +178,11 @@ typedef struct relevo_config {
     unsigned options;       /* RELEVO_OPT_* */
 
     relevo_host host;
+
+    /* The JIT's code memory, or NULL for the system's (see above). Copied
+     * by relevo_create(); its ctx must stay valid until relevo_destroy().
+     * The interpreter does not use it. */
+    const relevo_code_memory *code_memory;
 } relevo_config;
 
 /* ---- Memory pages ----------------------------------------------------- */
@@ -203,7 +251,7 @@ typedef enum relevo_status {
 
 /* Creates a CPU. The configuration is copied. Returns NULL if the
  * configuration is not valid or not supported here (the JIT engine on a
- * host that is not x86-64). */
+ * host that is not x86-64, or without code memory). */
 relevo_cpu *relevo_create(const relevo_config *config);
 void relevo_destroy(relevo_cpu *cpu);
 

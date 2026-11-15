@@ -100,6 +100,10 @@
     X(jit_cpush)                \
     X(jit_translated)           \
     X(jit_host_patches_block)   \
+    X(jit_host_code_memory)     \
+    X(jit_host_code_memory_bad) \
+    X(jit_host_code_memory_small) \
+    X(jit_host_code_memory_refused) \
     X(json_values)              \
     X(json_nesting_and_skip)    \
     X(json_errors)              \

@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Executable memory with W^X: no page is ever writable and executable at
-//! once. On Linux the same memory is mapped twice, once read-write (where
-//! the translator's bytes are copied) and once read-execute (what runs),
-//! through a memfd; if that is not possible, one mapping switches between
-//! RW and RX with mprotect() around each write. Windows does the same with
-//! a section mapped twice, or VirtualAlloc() and VirtualProtect() (written
-//! from the Win32 documentation, as in the C version; not run on Windows
-//! yet). Without the `std` feature, or on other systems, there is no code
-//! memory and so no JIT.
+//! once.
 //!
-//! One of the modules with `unsafe`: the system calls and the copies into
-//! the mappings. Every write is bounds-checked against the mapping and only
-//! allowed between `begin_write()` and `end_write()`.
+//! The host may give it (`relevo_config.code_memory`, a table of functions:
+//! DashOS, or any system without `std`): two views of the same memory, one
+//! to write and one to run, and calls around each group of writes. Without
+//! it, the system's: on Linux the same memory is mapped twice, once
+//! read-write (where the translator's bytes are copied) and once
+//! read-execute (what runs), through a memfd; if that is not possible, one
+//! mapping switches between RW and RX with mprotect() around each write.
+//! Windows does the same with a section mapped twice, or VirtualAlloc() and
+//! VirtualProtect() (written from the Win32 documentation, as in the C
+//! version; not run on Windows yet). Without the `std` feature, or on other
+//! systems, there is no system code memory: the JIT needs the host's.
+//!
+//! One of the modules with `unsafe`: the system calls, the calls into the
+//! host's functions and the copies into the mappings. Every write is
+//! bounds-checked against the mapping and only allowed between
+//! `begin_write()` and `end_write()`.
 #![allow(unsafe_code)]
 
-#[cfg_attr(not(all(feature = "std", any(unix, windows))), allow(dead_code))]
+use crate::capi::relevo_code_memory;
+
 pub struct CodeMem {
     /// where code is written
     rw: *mut u8,
@@ -22,15 +29,87 @@ pub struct CodeMem {
     rx: *mut u8,
     size: usize,
     /// two mappings; else the protection is toggled
+    #[cfg_attr(not(all(feature = "std", any(unix, windows))), allow(dead_code))]
     dual: bool,
     /// Linux: the memfd, or -1
     #[allow(dead_code)]
     fd: i32,
     /// between begin_write() and end_write()
     writable: bool,
+    /// The host's functions, if the host gave the memory
+    host: Option<relevo_code_memory>,
+    /// What was written since begin_write(): [lo, hi)
+    lo: usize,
+    hi: usize,
 }
 
 impl CodeMem {
+    /// The host's code memory: `size` bytes from its `map` (which
+    /// relevo_create() checked is there).
+    pub fn from_host(h: relevo_code_memory, size: usize) -> Option<CodeMem> {
+        let map = h.map?;
+        let mut rw = core::ptr::null_mut();
+        let mut rx = core::ptr::null_mut();
+        // SAFETY: the host's function with its own ctx, as relevo.h
+        // describes it; relevo_create()'s caller promised they are valid.
+        if unsafe { map(h.ctx, size, &mut rw, &mut rx) } != 0 || rw.is_null() || rx.is_null() {
+            return None;
+        }
+        Some(CodeMem {
+            rw: rw.cast(),
+            rx: rx.cast(),
+            size,
+            dual: rw != rx,
+            fd: -1,
+            writable: false,
+            host: Some(h),
+            lo: usize::MAX,
+            hi: 0,
+        })
+    }
+
+    /// `size` bytes of the system's code memory, or None.
+    pub fn new(size: usize) -> Option<CodeMem> {
+        Self::system(size)
+    }
+
+    /// Brackets every write: after end_write() the bytes written may run.
+    pub fn begin_write(&mut self) -> bool {
+        let ok = match self.host {
+            Some(h) => match h.begin_write {
+                // SAFETY: the host's function (see from_host()).
+                Some(f) => (unsafe { f(h.ctx) }) == 0,
+                None => true,
+            },
+            None => self.system_begin_write(),
+        };
+        if ok {
+            self.writable = true;
+            self.lo = usize::MAX;
+            self.hi = 0;
+        }
+        ok
+    }
+
+    /// Tells the host (or the system) what was written.
+    pub fn end_write(&mut self) {
+        self.writable = false;
+        match self.host {
+            Some(h) => {
+                if let Some(f) = h.end_write {
+                    let (off, len) = if self.lo < self.hi {
+                        (self.lo, self.hi - self.lo)
+                    } else {
+                        (0, 0)
+                    };
+                    // SAFETY: the host's function (see from_host()).
+                    unsafe { f(h.ctx, off, len) };
+                }
+            }
+            None => self.system_end_write(),
+        }
+    }
+
     pub fn size(&self) -> usize {
         self.size
     }
@@ -45,11 +124,29 @@ impl CodeMem {
     /// end_write(); panics outside the memory.
     pub fn write(&mut self, off: usize, bytes: &[u8]) {
         assert!(self.writable && off <= self.size && bytes.len() <= self.size - off);
+        self.lo = self.lo.min(off);
+        self.hi = self.hi.max(off + bytes.len());
         // SAFETY: inside the RW mapping (checked above), which is writable
-        // now (dual mapping, or switched to RW by begin_write()); nothing
-        // else in Rust refers to these bytes.
+        // now (dual mapping, or switched to RW by begin_write(); the host's,
+        // as relevo.h asks of it); nothing else in Rust refers to these
+        // bytes.
         unsafe {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.rw.add(off), bytes.len());
+        }
+    }
+}
+
+impl Drop for CodeMem {
+    fn drop(&mut self) {
+        match self.host {
+            Some(h) => {
+                if let Some(f) = h.unmap {
+                    // SAFETY: the host's function, with what its map() gave;
+                    // nothing runs from this memory any more.
+                    unsafe { f(h.ctx, self.rw.cast(), self.rx.cast(), self.size) };
+                }
+            }
+            None => self.system_drop(),
         }
     }
 }
@@ -132,6 +229,9 @@ impl CodeMem {
                     dual: true,
                     fd,
                     writable: false,
+                    host: None,
+                    lo: usize::MAX,
+                    hi: 0,
                 });
             }
             if rw != MAP_FAILED {
@@ -150,8 +250,7 @@ impl CodeMem {
         None
     }
 
-    /// `size` bytes of code memory, or None.
-    pub fn new(size: usize) -> Option<CodeMem> {
+    fn system(size: usize) -> Option<CodeMem> {
         if let Some(m) = Self::dual_mapping(size) {
             return Some(m);
         }
@@ -178,11 +277,13 @@ impl CodeMem {
             dual: false,
             fd: -1,
             writable: false,
+            host: None,
+            lo: usize::MAX,
+            hi: 0,
         })
     }
 
-    /// Brackets every write: after end_write() the bytes written may run.
-    pub fn begin_write(&mut self) -> bool {
+    fn system_begin_write(&mut self) -> bool {
         if !self.dual {
             // SAFETY: our own mapping; no code runs while it is RW.
             if unsafe { sys::mprotect(self.rw.cast(), self.size, sys::PROT_READ | sys::PROT_WRITE) }
@@ -191,12 +292,10 @@ impl CodeMem {
                 return false;
             }
         }
-        self.writable = true;
         true
     }
 
-    pub fn end_write(&mut self) {
-        self.writable = false;
+    fn system_end_write(&mut self) {
         if !self.dual {
             // SAFETY: our own mapping.
             unsafe {
@@ -207,9 +306,9 @@ impl CodeMem {
 }
 
 #[cfg(all(feature = "std", unix))]
-impl Drop for CodeMem {
-    fn drop(&mut self) {
-        // SAFETY: the mappings made by new(); nothing runs from them now.
+impl CodeMem {
+    fn system_drop(&mut self) {
+        // SAFETY: the mappings made by system(); nothing runs from them now.
         unsafe {
             sys::munmap(self.rx.cast(), self.size);
             if self.dual {
@@ -269,8 +368,7 @@ mod sys {
 
 #[cfg(all(feature = "std", windows))]
 impl CodeMem {
-    /// `size` bytes of code memory, or None.
-    pub fn new(size: usize) -> Option<CodeMem> {
+    fn system(size: usize) -> Option<CodeMem> {
         use sys::*;
         // SAFETY: plain system calls; the results are checked, and what
         // was made is undone on failure.
@@ -295,6 +393,9 @@ impl CodeMem {
                         dual: true,
                         fd: -1,
                         writable: false,
+                        host: None,
+                        lo: usize::MAX,
+                        hi: 0,
                     });
                 }
                 if !rw.is_null() {
@@ -320,11 +421,14 @@ impl CodeMem {
                 dual: false,
                 fd: -1,
                 writable: false,
+                host: None,
+                lo: usize::MAX,
+                hi: 0,
             })
         }
     }
 
-    pub fn begin_write(&mut self) -> bool {
+    fn system_begin_write(&mut self) -> bool {
         if !self.dual {
             let mut old = 0;
             // SAFETY: our own memory; no code runs while it is RW.
@@ -335,12 +439,10 @@ impl CodeMem {
                 return false;
             }
         }
-        self.writable = true;
         true
     }
 
-    pub fn end_write(&mut self) {
-        self.writable = false;
+    fn system_end_write(&mut self) {
         let mut old = 0;
         // SAFETY: our own memory.
         unsafe {
@@ -353,9 +455,9 @@ impl CodeMem {
 }
 
 #[cfg(all(feature = "std", windows))]
-impl Drop for CodeMem {
-    fn drop(&mut self) {
-        // SAFETY: the memory made by new(); nothing runs from it now.
+impl CodeMem {
+    fn system_drop(&mut self) {
+        // SAFETY: the memory made by system(); nothing runs from it now.
         unsafe {
             if self.dual {
                 sys::UnmapViewOfFile(self.rx.cast());
@@ -367,17 +469,19 @@ impl Drop for CodeMem {
     }
 }
 
-// ---- Nothing ---------------------------------------------------------------------------
+// ---- Nothing: only the host's -----------------------------------------------------------
 
 #[cfg(not(all(feature = "std", any(unix, windows))))]
 impl CodeMem {
-    pub fn new(_size: usize) -> Option<CodeMem> {
+    fn system(_size: usize) -> Option<CodeMem> {
         None
     }
 
-    pub fn begin_write(&mut self) -> bool {
+    fn system_begin_write(&mut self) -> bool {
         false
     }
 
-    pub fn end_write(&mut self) {}
+    fn system_end_write(&mut self) {}
+
+    fn system_drop(&mut self) {}
 }

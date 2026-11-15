@@ -4,7 +4,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
-use crate::capi::{Handle, SharedRef, relevo_host};
+use crate::capi::{Handle, SharedRef, relevo_code_memory, relevo_host};
 use crate::interp::{self, Handler};
 use crate::jit::{Ind, Jit};
 use crate::window::Window;
@@ -151,6 +151,8 @@ pub struct Config {
     pub host: relevo_host,
     /// The JIT engine (else the interpreter)
     pub jit: bool,
+    /// The JIT's code memory, from the host; None: the system's
+    pub code_memory: Option<relevo_code_memory>,
 }
 
 /// The fields translated code reads come first, where a one-byte
@@ -298,7 +300,7 @@ impl Cpu {
         if cfg.memory_size != 0 {
             c.mem.map(0, cfg.memory_size, crate::window::PAGE_RAM);
         }
-        if cfg.jit && !c.jit_create(legal) {
+        if cfg.jit && !c.jit_create(legal, cfg.code_memory) {
             return None;
         }
         c.r.sr = SR_S | SR_IPL;

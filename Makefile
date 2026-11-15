@@ -14,6 +14,8 @@
 #   make sysdiff        the same on the machine state: every model and FPU,
 #                       SR, VBR, frames, host traps, garbage as code
 #   make bench          speed of the JIT against the interpreter
+#   build/runbin        runs flat 68k binaries (DashOS's jit-host/pruebas68k)
+#                       on both engines: the reference for DashOS (X7a)
 #   make oraculo        regenerate the oracle bench (tools/oraculo: FS-UAE, Emu68)
 #   make CC=clang       any C11 compiler; objects are rebuilt when CC changes
 #   make clean
@@ -45,13 +47,14 @@ LIB := target/release/librelevo.a
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
 UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
             tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c \
-            tests/test_sst.c tests/test_jit.c $(TEST_COMMON)
+            tests/test_sst.c tests/test_jit.c tests/test_codemem.c $(TEST_COMMON)
 SST_SRC := tests/sst.c $(TEST_COMMON)
 ORACLE_SRC := tests/oraculo.c
 JITDIFF_SRC := tests/jitdiff.c tests/gen68k.c
 SYSDIFF_SRC := tests/sysdiff.c tests/gen68k.c
 BENCH_SRC := tests/bench.c
 ABI_SRC := tests/abi.c
+RUNBIN_SRC := tests/runbin.c
 ORACLE_DATA := $(wildcard tests/oraculo/*.txt)
 SST_DATA := tests/datos/m68000
 
@@ -62,6 +65,7 @@ JITDIFF_OBJ := $(JITDIFF_SRC:%.c=$(BUILD)/%.o)
 SYSDIFF_OBJ := $(SYSDIFF_SRC:%.c=$(BUILD)/%.o)
 BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
 ABI_OBJ := $(ABI_SRC:%.c=$(BUILD)/%.o)
+RUNBIN_OBJ := $(RUNBIN_SRC:%.c=$(BUILD)/%.o)
 
 # make sst JIT=1 runs SingleStepTests on the JIT engine.
 SST_FLAGS := $(if $(JIT),-j,)
@@ -69,7 +73,7 @@ SST_FLAGS := $(if $(JIT),-j,)
 .PHONY: all test data sst oraculo jitdiff sysdiff bench clean FORCE
 
 all: $(LIB) $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff \
-     $(BUILD)/sysdiff $(BUILD)/bench $(BUILD)/abi
+     $(BUILD)/sysdiff $(BUILD)/bench $(BUILD)/abi $(BUILD)/runbin
 
 # Rebuild everything when the compiler or its flags change.
 $(BUILD)/compiler: FORCE
@@ -82,8 +86,11 @@ $(BUILD)/%.o: %.c $(BUILD)/compiler
 	$(CC) $(ALL_CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # cargo knows what is out of date; it leaves the library alone if nothing is.
+# Cargo.toml only names the rlib (a no_std user such as DashOS depends on the
+# crate, and a no_std staticlib would need a panic handler and an allocator),
+# so the staticlib for C is asked for here.
 $(LIB): FORCE
-	$(CARGO) build --release --quiet
+	$(CARGO) rustc --release --lib --quiet --crate-type staticlib
 
 $(BUILD)/run_tests: $(UNIT_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(UNIT_OBJ) $(LIB) $(LDLIBS)
@@ -105,6 +112,9 @@ $(BUILD)/bench: $(BENCH_OBJ) $(LIB)
 
 $(BUILD)/abi: $(ABI_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ABI_OBJ) $(LIB) $(LDLIBS)
+
+$(BUILD)/runbin: $(RUNBIN_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(RUNBIN_OBJ) $(LIB) $(LDLIBS)
 
 test: $(BUILD)/abi $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo \
       $(BUILD)/jitdiff $(BUILD)/sysdiff
@@ -173,4 +183,4 @@ clean:
 
 -include $(UNIT_OBJ:.o=.d) $(SST_OBJ:.o=.d) $(ORACLE_OBJ:.o=.d) \
          $(JITDIFF_OBJ:.o=.d) $(SYSDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) \
-         $(ABI_OBJ:.o=.d)
+         $(ABI_OBJ:.o=.d) $(RUNBIN_OBJ:.o=.d)

@@ -21,6 +21,11 @@ jobs:
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo test
+      - name: "Rust without std (no_std with alloc, as DashOS uses it)"
+        if: matrix.san == '' && matrix.cc == 'gcc'
+        run: |
+          rustup target add x86_64-unknown-none
+          cargo clippy --release --no-default-features --target x86_64-unknown-none -- -D warnings
       - name: SingleStepTests/m68000, interpreter and JIT
         if: matrix.san == ''
         run: |

@@ -55,6 +55,28 @@ pub struct relevo_host {
     pub reset: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
 }
 
+/// `relevo_code_memory`: the JIT's executable memory, given by the host
+/// (see relevo.h). `map` is required; the others are optional.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct relevo_code_memory {
+    pub ctx: *mut c_void,
+    pub size: usize,
+    pub map: Option<
+        unsafe extern "C" fn(
+            ctx: *mut c_void,
+            size: usize,
+            rw: *mut *mut c_void,
+            rx: *mut *mut c_void,
+        ) -> c_int,
+    >,
+    pub unmap: Option<
+        unsafe extern "C" fn(ctx: *mut c_void, rw: *mut c_void, rx: *mut c_void, size: usize),
+    >,
+    pub begin_write: Option<unsafe extern "C" fn(ctx: *mut c_void) -> c_int>,
+    pub end_write: Option<unsafe extern "C" fn(ctx: *mut c_void, offset: usize, size: usize)>,
+}
+
 /// `relevo_config`. The enums are plain integers here: the host may pass
 /// any value, and an unknown one makes `relevo_create()` fail.
 #[repr(C)]
@@ -67,6 +89,7 @@ pub struct relevo_config {
     pub address_mask: u32,
     pub options: c_uint,
     pub host: relevo_host,
+    pub code_memory: *const relevo_code_memory,
 }
 
 #[repr(C)]
@@ -112,6 +135,7 @@ impl core::ops::Deref for SharedRef {
 const LAYOUT: &[(&str, usize)] = {
     type H = relevo_host;
     type C = relevo_config;
+    type K = relevo_code_memory;
     type F = relevo_fpreg;
     type R = relevo_regs;
     &[
@@ -139,6 +163,15 @@ const LAYOUT: &[(&str, usize)] = {
         ("relevo_config.address_mask", offset_of!(C, address_mask)),
         ("relevo_config.options", offset_of!(C, options)),
         ("relevo_config.host", offset_of!(C, host)),
+        ("relevo_config.code_memory", offset_of!(C, code_memory)),
+        ("sizeof relevo_code_memory", size_of::<K>()),
+        ("alignof relevo_code_memory", align_of::<K>()),
+        ("relevo_code_memory.ctx", offset_of!(K, ctx)),
+        ("relevo_code_memory.size", offset_of!(K, size)),
+        ("relevo_code_memory.map", offset_of!(K, map)),
+        ("relevo_code_memory.unmap", offset_of!(K, unmap)),
+        ("relevo_code_memory.begin_write", offset_of!(K, begin_write)),
+        ("relevo_code_memory.end_write", offset_of!(K, end_write)),
         ("sizeof relevo_fpreg", size_of::<F>()),
         ("alignof relevo_fpreg", align_of::<F>()),
         ("relevo_fpreg.mantissa", offset_of!(F, mantissa)),
@@ -179,11 +212,14 @@ const LAYOUT: &[(&str, usize)] = {
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     assert!(size_of::<relevo_host>() == 48);
-    assert!(size_of::<relevo_config>() == 88);
+    assert!(size_of::<relevo_config>() == 96);
     assert!(offset_of!(relevo_config, memory) == 16);
     assert!(offset_of!(relevo_config, memory_size) == 24);
     assert!(offset_of!(relevo_config, address_mask) == 32);
     assert!(offset_of!(relevo_config, host) == 40);
+    assert!(offset_of!(relevo_config, code_memory) == 88);
+    assert!(size_of::<relevo_code_memory>() == 48);
+    assert!(offset_of!(relevo_code_memory, end_write) == 40);
     assert!(size_of::<relevo_fpreg>() == 16);
     assert!(size_of::<relevo_regs>() == 288);
     assert!(offset_of!(relevo_regs, pc) == 64);
@@ -312,6 +348,14 @@ fn fpu_from(raw: c_uint) -> Option<Fpu> {
     })
 }
 
+/// A host's code memory as relevo.h asks: `map` given, and a size of 0 or
+/// a multiple of 4 KB from 64 KB to 1 GB (the JIT's jumps inside it are
+/// 32-bit).
+fn code_memory_valid(m: &relevo_code_memory) -> bool {
+    m.map.is_some()
+        && (m.size == 0 || (m.size % 4096 == 0 && (1 << 16..=1 << 30).contains(&m.size)))
+}
+
 /// The checks of the C version, and then what this version runs so far.
 fn config_valid(cfg: &relevo_config) -> Option<(Model, Fpu)> {
     let model = model_from(cfg.model)?;
@@ -339,7 +383,9 @@ fn config_valid(cfg: &relevo_config) -> Option<(Model, Fpu)> {
 /// # Safety
 ///
 /// `config` is NULL or points to a valid `relevo_config`, whose memory
-/// block stays valid until `relevo_destroy()`.
+/// block stays valid until `relevo_destroy()`; its `code_memory` is NULL
+/// or points to a valid `relevo_code_memory`, whose functions may be
+/// called with its ctx until `relevo_destroy()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut relevo_cpu {
     if config.is_null() {
@@ -350,6 +396,16 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
     let Some((model, fpu)) = config_valid(cfg) else {
         return core::ptr::null_mut();
     };
+    let code_memory = if cfg.engine == 1 && !cfg.code_memory.is_null() {
+        // SAFETY: the caller's promise; copied here.
+        let m = unsafe { *cfg.code_memory };
+        if !code_memory_valid(&m) {
+            return core::ptr::null_mut();
+        }
+        Some(m)
+    } else {
+        None
+    };
     let config = Config {
         model,
         fpu,
@@ -359,6 +415,7 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
         options: cfg.options,
         host: cfg.host,
         jit: cfg.engine == 1,
+        code_memory,
     };
     // SAFETY: the host's memory block, as relevo.h asks of it.
     let window = unsafe { Window::new(config.memory, config.memory_size) };

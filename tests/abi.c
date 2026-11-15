@@ -37,6 +37,13 @@ static const entry entries[] = {
     FIELD(relevo_config, engine), FIELD(relevo_config, memory),
     FIELD(relevo_config, memory_size), FIELD(relevo_config, address_mask),
     FIELD(relevo_config, options), FIELD(relevo_config, host),
+    FIELD(relevo_config, code_memory),
+
+    SIZE(relevo_code_memory), ALIGN(relevo_code_memory),
+    FIELD(relevo_code_memory, ctx), FIELD(relevo_code_memory, size),
+    FIELD(relevo_code_memory, map), FIELD(relevo_code_memory, unmap),
+    FIELD(relevo_code_memory, begin_write),
+    FIELD(relevo_code_memory, end_write),
 
     SIZE(relevo_fpreg), ALIGN(relevo_fpreg),
     FIELD(relevo_fpreg, mantissa), FIELD(relevo_fpreg, sign_exponent),
