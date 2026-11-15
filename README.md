@@ -34,12 +34,15 @@ make jitdiff      # a long random differential run, JIT against interpreter
 make sysdiff      # the same on the machine state: every model and FPU, SR, VBR, frames, host traps
 make bench        # speed of the JIT against the interpreter
 make oraculo      # regenerate the bench against FS-UAE with the real Kickstart (tools/oraculo)
+build/runbin f.bin...  # run flat 68k binaries on both engines (DashOS's jit-host/pruebas68k)
 cargo test        # the crate's own tests (and cargo clippy)
 ```
 
-A C program links with `target/release/librelevo.a` and what the Rust standard library needs from the system (on
-Linux `-lgcc_s -lutil -lrt -lpthread -ldl -lc`; see the Makefile). A Rust program uses the crate directly; without
-its `std` feature it is `no_std` with `alloc`, and has no JIT.
+A C program links with `target/release/librelevo.a` (the Makefile builds it with `cargo rustc --crate-type
+staticlib`; `Cargo.toml` only names the rlib) and what the Rust standard library needs from the system (on Linux
+`-lgcc_s -lutil -lrt -lpthread -ldl -lc`; see the Makefile). A Rust program uses the crate directly, through the same
+C interface (`relevo::capi`); without its `std` feature it is `no_std` with `alloc` (the program gives the allocator
+and the panic handler), and the JIT needs the host's code memory (below).
 
 ## Using it
 
@@ -66,7 +69,11 @@ the host can call 68k code by pushing 0 as its return address (as Emu68 does). T
 line F opcodes before they become exceptions (`cfg.host.line_a`, `cfg.host.line_f`).
 
 `cfg.engine = RELEVO_ENGINE_JIT` selects the JIT (x86-64 hosts: Linux and other Unix systems; the Windows code
-memory is written but not yet tried; `relevo_create()` returns NULL elsewhere). It gives the same results as the
+memory is written but not yet tried; `relevo_create()` returns NULL elsewhere). The host may give the JIT's
+executable memory itself (`cfg.code_memory`, a `relevo_code_memory`): two views of the same memory, one to write
+the code and one to run it (W^X), and a call after each group of writes, where it serializes or flushes caches if
+its CPU needs it. That is how a system without the Rust standard library runs the JIT (DashOS, with its memory
+objects); without it the library asks the system (a memfd mapped twice on Linux). It gives the same results as the
 interpreter: what it does not translate, and every access that is not plain RAM (or ROM, to read), runs in the
 interpreter, called from the translated code for host pages. Host functions may call `relevo_invalidate()` and
 `relevo_map()`. The FPU's common instructions run from translated code too, with the same software arithmetic. Writes

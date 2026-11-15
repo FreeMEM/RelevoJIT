@@ -43,6 +43,8 @@ Las reglas del bucle están en `~/Projects/dashos/.worktrees/x86/docs/X86_LOOP.m
 - [x] R7 **JIT de la FPU y rendimiento** (2026-11-14): banderas entre bloques en forma de x86, `TAS`, `CHK`, `CAS`,
   `MOVEP` y BCD en memoria, páginas del anfitrión desde el bloque, la FPU común desde el bloque y la memoria de código
   para Windows (escrita, sin probar).
+- [x] X7a **El JIT sin `std`, con la memoria de código del anfitrión** (2026-11-15, tarea X7a de DashOS): rama `x7a`.
+  RelevoJIT corre dentro de un proceso de DashOS x86-64.
 
 ## Bloqueos
 
@@ -1023,3 +1025,58 @@ Queda (de RR3, sin cambios):
 
 - Sin `std` no hay JIT: DashOS en x86 (sin libc) necesitará que el anfitrión dé la memoria ejecutable.
 - Windows: compilar y probar la memoria de código y la convención System V de las retrollamadas.
+
+### 2026-11-15 — X7a: el JIT sin `std`, con la memoria de código del anfitrión
+
+Lo pidió la tarea X7a de DashOS (rama `x86`): RelevoJIT dentro de un proceso de DashOS x86-64, sin caja Amiga. La
+rama `puertos` (la capa de puertos de la versión en C) queda obsoleta; de ella solo se trajo `tests/runbin.c`.
+
+Hecho:
+
+- `relevo_code_memory` en `include/relevo.h` y `relevo_config.code_memory` (al final: `relevo_config` pasa de 88 a 96
+  bytes). Una tabla de funciones: `map` (obligatoria) da dos vistas del mismo objeto, `rw` para escribir y `rx` para
+  ejecutar; `unmap` la devuelve en `relevo_destroy()` (o si `relevo_create()` falla después de `map`);
+  `begin_write` puede negarse (entonces ese código va al intérprete); `end_write` dice el tramo escrito
+  (`offset`, `size`), y ahí el anfitrión serializa o limpia cachés. `size` 0 es el de siempre (32 MB); si no, múltiplo
+  de 4 KB entre 64 KB y 1 GB (los saltos dentro son de 32 bits). `relevo_create()` la copia; el intérprete no la
+  mira. Se eligió una tabla de C y no un trait de Rust: la interfaz entera es la de C, y DashOS la usa desde Rust
+  igual.
+- `src/jit/codemem.rs`: `CodeMem::from_host()` y el camino del anfitrión en `begin_write`, `end_write` y `Drop`, con el
+  tramo escrito; lo de cada sistema pasa a `system()`, `system_begin_write()`... Sin `std` el sistema no da nada,
+  como antes, pero ya no hace falta. El `unsafe` nuevo está ahí (las llamadas a las funciones del anfitrión) y en
+  `capi.rs` (leer la tabla), cada bloque con su justificación.
+- `Cargo.toml`: solo `rlib`. Con `staticlib` y `cdylib` en la lista, Cargo las compilaba también como dependencia, y
+  una `staticlib` sin `std` pide manejador de pánico y asignador: un programa `no_std` no podía depender del crate. El
+  Makefile saca `librelevo.a` con `cargo rustc --release --lib --crate-type staticlib`. La `cdylib` no la usaba nadie.
+- Pruebas: `tests/test_codemem.c` (4 nuevas: un anfitrión con un memfd proyectado dos veces, contando y comprobando
+  sus llamadas y el código cambiado; tablas que no valen y `map` que falla; 64 KB de memoria para 300 KB de código,
+  con vaciados; un anfitrión que no deja escribir, todo al intérprete), `host_code_memory` en `src/tests.rs`, la
+  tabla en `tests/abi.c`, y en el CI `cargo clippy` sin `std` para `x86_64-unknown-none`.
+- `tests/runbin.c` (`build/runbin`): ejecuta binarios 68k planos (los de `dashos/jit-host/pruebas68k`) con los dos
+  motores y saca una línea por programa y motor, con una suma de los registros y de la memoria. Es la referencia de
+  DashOS (`jit-host/pruebas68k/ref/relevo.txt` en su rama `x86`).
+
+En DashOS (`usuario/src/bin/relevo.rs`): el crate por git con `rev` fijo (ac26a32), sin `std`; la memoria de código
+es un objeto de memoria de 8 MB proyectado para escribir y, en otra dirección, para ejecutar; `end_write` hace un
+CPUID. Los 7 programas de `pruebas68k` dan con los dos motores las mismas líneas que `runbin` en Linux. MIPS del banco
+de `tests/bench.c` (68020):
+
+| | Linux (nativo) | DashOS en QEMU con KVM | DashOS en QEMU con TCG |
+|---|---|---|---|
+| arith, intérprete / JIT | 187 / 5975 | 192 / 5949 | 10 / 511 |
+| copy | 141 / 1699 | 137 / 1315 | 11 / 147 |
+| bytes | 190 / 3115 | 192 / 3049 | 10 / 198 |
+
+Comprobado:
+
+- `make test` con gcc y con clang: ABI 65/65, 105/105 unitarias, oráculo, `jitdiff`, `sysdiff`, NOP con los dos
+  motores. `make sst` y `make sst JIT=1`: 317 500/317 500.
+- `cargo test` (14), `cargo clippy --all-targets -D warnings`, `cargo fmt --check`. Sin `std`: compila para
+  `x86_64-unknown-none` (nightly con `-Zbuild-std`) y `cargo clippy --no-default-features -D warnings` en x86-64 Linux
+  sin avisos. Y lo prueba de verdad DashOS (`make -C kernel prueba-x86`).
+- `ci.yml` es YAML válido (PyYAML).
+
+Sin probar: el paso nuevo del CI con el Rust estable (aquí se compiló sin `std` con nightly y `-Zbuild-std`; el
+nightly de esta máquina no tiene clippy); `runbin` bajo `qemu-x86_64` (la glibc de esta máquina usa instrucciones
+que el TCG de QEMU no tiene). Windows, como antes.
+

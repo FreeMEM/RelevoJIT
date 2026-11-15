@@ -50,6 +50,13 @@ Una cabecera, `include/relevo.h`. Esbozo (lo fija la tarea R1):
 - **Registros.** Una estructura pública con D0-D7, A0-A7, PC, SR, USP, SSP (ISP y MSP), VBR, CACR, SFC, DFC y la FPU.
 - **Caché.** `relevo_invalidate(cpu, dirección, tamaño)` para el código que se carga o se cambia; `CPUSH` y `CINV`
   la llaman solas.
+- **Memoria de código** (X7a de DashOS, 2026-11-15). El anfitrión puede dar la memoria ejecutable del JIT con
+  `relevo_config.code_memory`, una tabla de funciones (`relevo_code_memory`): `map` da dos vistas del mismo objeto,
+  una para escribir y otra para ejecutar (W^X; si son la misma dirección, el anfitrión cambia la protección en
+  `begin_write` y `end_write`); `end_write` avisa de lo escrito (el tramo), y ahí el anfitrión serializa o limpia
+  cachés; `unmap` la devuelve. Tabla de funciones y no un trait de Rust porque toda la interfaz es la de C, también
+  para un anfitrión en Rust. Sin ella, la del sistema (memfd en Linux, sección en Windows); sin `std` no hay sistema,
+  y el JIT necesita la del anfitrión.
 
 Sin estado global: varias CPU en el mismo proceso, cada una en su hilo.
 
