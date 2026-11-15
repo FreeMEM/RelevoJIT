@@ -276,6 +276,11 @@ impl Cpu {
         let nmi = ipl == 7 && self.prev_ipl != 7; // level 7: on the edge
         self.prev_ipl = ipl;
         if ipl > mask || nmi {
+            // A fault while taking it stacks the PC of the instruction it
+            // interrupts, as if that one had started (the JIT does not keep
+            // these up to date inside blocks).
+            self.insn_pc = self.r.pc;
+            self.ae_pc = self.r.pc.wrapping_add(2);
             self.interrupt(ipl)?;
         }
         Ok(!self.stopped)

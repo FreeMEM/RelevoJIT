@@ -180,7 +180,23 @@ uint32_t rnd_mask(void)
     }
 }
 
-/* An FPU opmode: mostly those the JIT runs, sometimes any. */
+bool gen_no_trans;
+
+bool fop_transcendental(unsigned opmode)
+{
+    static const uint8_t t[] = { 0x02, 0x06, 0x08, 0x09, 0x0A, 0x0C, 0x0D,
+                                 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x15,
+                                 0x16, 0x19, 0x1C, 0x1D };
+    if (opmode >= 0x30 && opmode <= 0x37)
+        return true;        /* FSINCOS */
+    for (unsigned i = 0; i < sizeof t; i++)
+        if (t[i] == opmode)
+            return true;
+    return false;
+}
+
+/* An FPU opmode: mostly those the JIT runs, sometimes any (but a
+ * transcendental function with gen_no_trans). */
 unsigned rnd_fop(void)
 {
     static const uint8_t ops[] = { 0x00, 0x04, 0x18, 0x1A, 0x20, 0x22, 0x23,
@@ -188,8 +204,13 @@ unsigned rnd_fop(void)
     static const uint8_t sd[] = { 0x40, 0x41, 0x44, 0x45, 0x58, 0x5A, 0x5C,
                                   0x5E, 0x60, 0x62, 0x63, 0x64, 0x66, 0x67,
                                   0x68, 0x6C };
-    if (chance(5))
-        return rn(0x80);
+    if (chance(5)) {
+        unsigned m;
+        do
+            m = rn(0x80);
+        while (gen_no_trans && fop_transcendental(m));
+        return m;
+    }
     if (gen_fpu == RELEVO_FPU_INTERNAL && chance(25))
         return sd[rn(sizeof sd)];
     return ops[rn(sizeof ops)];

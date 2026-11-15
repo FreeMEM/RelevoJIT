@@ -255,7 +255,13 @@ bool cpu_between_insns(relevo_cpu *c)
     unsigned mask = (c->r.sr & RELEVO_SR_IPL) >> 8;
     bool nmi = ipl == 7 && c->prev_ipl != 7;    /* level 7: on the edge */
     c->prev_ipl = ipl;
-    if (ipl > mask || nmi)
+    if (ipl > mask || nmi) {
+        /* A fault while taking it stacks the PC of the instruction it
+         * interrupts, as if that one had started (the JIT does not keep
+         * these up to date inside blocks). */
+        c->insn_pc = c->r.pc;
+        c->ae_pc = c->r.pc + 2;
         interrupt(c, ipl);
+    }
     return !c->stopped;
 }

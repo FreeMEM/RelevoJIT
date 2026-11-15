@@ -69,6 +69,12 @@ unsigned size_bits(unsigned size);
 int32_t rnd_disp(uint32_t pc);
 uint32_t rnd_mask(void);
 unsigned rnd_fop(void);
+/* Whether an FPU opmode is a transcendental function (68881/68882), and
+ * whether the generator leaves them out (crdiff -J: the two libraries
+ * compute them differently, and on the JIT a run is compared only at its
+ * end). */
+bool fop_transcendental(unsigned opmode);
+extern bool gen_no_trans;
 void rnd_fpu(uint32_t pc, unsigned dn);
 void rnd_insn_more(uint32_t pc, unsigned size, unsigned dn);
 /* One random instruction for code at `pc`, in words[0..nwords). */

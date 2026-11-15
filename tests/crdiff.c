@@ -5,7 +5,7 @@
  * Makefile), both on the interpreter (docs/REESCRITURA.md, RR2 and RR4).
  *
  *   crdiff [-m MODEL] [-f FPU] [-a] [-n CASES] [-k MAXLEN] [-s SEED]
- *          [-g PERCENT] [-u ULPS] [-T]
+ *          [-g PERCENT] [-u ULPS] [-T] [-J rust|both]
  *
  *   -m  68000 68010 68020 68030 68040 68060 (default 68000)
  *   -f  none 68881 68882 internal (default: none on the 68000 and 68010,
@@ -16,6 +16,8 @@
  *   -u  how many units in the last place a transcendental result may differ
  *       (default 3; see below)
  *   -T  no tolerance at all
+ *   -J  the JIT: rust, the Rust JIT against the C interpreter; both, the
+ *       Rust JIT against the C JIT (see below)
  *
  * Each case writes 1 to MAXLEN random instructions (the generator of
  * gen68k.c, as jitdiff uses it, plus what the 68010 to 68060 and the FPU
@@ -41,6 +43,17 @@
  * included, must be equal); then the Rust CPU gets the C one's registers so
  * that the rest of the case compares exactly. The statistics are printed
  * at the end.
+ *
+ * With -J each case runs its whole budget in one relevo_run() (a JIT runs
+ * blocks, not single instructions), with the interrupt level of the case
+ * from the start, and is compared at the end; cycles only if both sides
+ * run the same engine (the JIT's are an estimate). The generator leaves
+ * out the transcendental functions; random words may still make one, and
+ * then the FPU data registers get the same tolerance.
+ *
+ * The FPU's hidden state (an exception pending, the null state of FSAVE)
+ * starts at random with an FPU, and is compared too
+ * (relevo_test_fpu_state(), in both libraries).
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -66,8 +79,13 @@
     X(void, relevo_set_ipl, (relevo_cpu *, unsigned))                       \
     X(void, relevo_invalidate, (relevo_cpu *, uint32_t, uint32_t))          \
     X(uint32_t, relevo_read, (relevo_cpu *, uint32_t, unsigned))            \
-    X(void, relevo_write, (relevo_cpu *, uint32_t, uint32_t, unsigned))
+    X(void, relevo_write, (relevo_cpu *, uint32_t, uint32_t, unsigned))     \
+    X(void, relevo_test_fpu_state, (relevo_cpu *, unsigned *, bool *, int,  \
+                                    unsigned, bool))
 API_FUNCS(C_DECLARE)
+/* Not in relevo.h: a test hook of both libraries. */
+void relevo_test_fpu_state(relevo_cpu *, unsigned *, bool *, int, unsigned,
+                           bool);
 
 typedef struct api {
     const char *name;
@@ -190,6 +208,15 @@ static void host_reset(void *ctx)
 }
 
 static relevo_fpu fpu = RELEVO_FPU_NONE;
+/* -J: 0 the interpreters, 1 the Rust JIT, 2 both JITs. */
+static int jit_mode;
+
+static relevo_engine engine_of(const api *a)
+{
+    if (jit_mode == 2 || (jit_mode == 1 && a == &rust_api))
+        return RELEVO_ENGINE_JIT;
+    return RELEVO_ENGINE_INTERP;
+}
 
 /* Returns false if this library does not run that configuration. */
 static bool machine_init(machine *m, const api *a)
@@ -204,7 +231,7 @@ static bool machine_init(machine *m, const api *a)
     relevo_config cfg = {0};
     cfg.model = model;
     cfg.fpu = fpu;
-    cfg.engine = RELEVO_ENGINE_INTERP;
+    cfg.engine = engine_of(a);
     cfg.memory = m->mem;
     cfg.memory_size = MEM_SIZE;
     cfg.host.ctx = m;
@@ -234,20 +261,6 @@ static void machine_free(machine *m)
 
 #define VBR2 0x6000u            /* a second vector table */
 
-/* FPU opmodes of the transcendental functions (68881/68882). */
-static bool transcendental(unsigned opmode)
-{
-    static const uint8_t t[] = { 0x02, 0x06, 0x08, 0x09, 0x0A, 0x0C, 0x0D,
-                                 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x15,
-                                 0x16, 0x19, 0x1C, 0x1D };
-    if (opmode >= 0x30 && opmode <= 0x37)
-        return true;        /* FSINCOS */
-    for (unsigned i = 0; i < sizeof t; i++)
-        if (t[i] == opmode)
-            return true;
-    return false;
-}
-
 static unsigned rnd_trans_op(void)
 {
     static const uint8_t t[] = { 0x02, 0x06, 0x08, 0x09, 0x0A, 0x0C, 0x0D,
@@ -272,8 +285,12 @@ static unsigned rnd_ctrl_reg(void)
 
 static void rnd_fpu_more(uint32_t pc, unsigned dn)
 {
-    unsigned r = rn(8);
-    switch (rn(14)) {
+    unsigned r = rn(8), k;
+    /* (0, 12: transcendental; 10: any command word) */
+    do
+        k = rn(14);
+    while (gen_no_trans && (k == 0 || k == 12 || k == 10));
+    switch (k) {
     case 0: case 12:    /* a transcendental function, FPm,FPn or <ea>,FPn */
         if (chance(40)) {
             w16(0xF200);
@@ -538,6 +555,8 @@ static unsigned long trans_steps, trans_differ, trans_max_ulps, trans_inex;
 typedef struct state {
     relevo_regs r;
     unsigned ipl;
+    unsigned fpu_pending;
+    bool fpu_null;
 } state;
 
 /* Every field of relevo_regs, for comparing and printing. */
@@ -558,6 +577,8 @@ static void load_state(machine *m, const state *s)
     r->sr = s->r.sr;
     for (int i = 0; i < 8; i++)
         r->fp[i] = s->r.fp[i];
+    m->api->relevo_test_fpu_state(m->cpu, NULL, NULL, 1, s->fpu_pending,
+                                  s->fpu_null);
     m->api->relevo_set_ipl(m->cpu, s->ipl);
     m->nlog = 0;
 }
@@ -673,9 +694,18 @@ static bool compare_cpus(machine *x, machine *y, relevo_status sx,
             printf("  instructions Rust %" PRIu64 "  C %" PRIu64 "\n", ix, iy);
         ok = false;
     }
+    unsigned px, py;
+    bool nx, ny;
+    x->api->relevo_test_fpu_state(x->cpu, &px, &nx, 0, 0, false);
+    y->api->relevo_test_fpu_state(y->cpu, &py, &ny, 0, 0, false);
+    if (px != py || nx != ny) {
+        if (print)
+            printf("  FPU pending/null Rust %u/%d  C %u/%d\n", px, nx, py, ny);
+        ok = false;
+    }
     uint64_t cx = x->api->relevo_cycles(x->cpu);
     uint64_t cy = y->api->relevo_cycles(y->cpu);
-    if (cx != cy) {
+    if (cx != cy && engine_of(x->api) == engine_of(y->api)) {
         if (print)
             printf("  cycles Rust %" PRIu64 "  C %" PRIu64 "\n", cx, cy);
         ok = false;
@@ -731,16 +761,33 @@ static bool compare_mem(machine *x, machine *y, bool full, bool print)
     return true;
 }
 
+static bool trans_at(const machine *m, uint32_t pc);
+
 /* Sets a memory back to init_mem where a case may have changed it. */
 static void restore(machine *m, bool full)
 {
     if (full) {
         memcpy(m->mem, init_mem, MEM_SIZE);
+        m->api->relevo_invalidate(m->cpu, 0, MEM_SIZE);
         return;
     }
     memcpy(m->mem, init_mem, 0x8000);
     memcpy(m->mem + CODE, init_mem + CODE, CODE_END - CODE);
     memcpy(m->mem + WIN - 0x10000, init_mem + WIN - 0x10000, 0x20000);
+    /* Written behind the CPU's back: drop what a JIT made of it. */
+    m->api->relevo_invalidate(m->cpu, 0, 0x8000);
+    m->api->relevo_invalidate(m->cpu, CODE, CODE_END - CODE);
+    m->api->relevo_invalidate(m->cpu, WIN - 0x10000, 0x20000);
+}
+
+/* Whether code in [lo, hi) holds a word that starts a transcendental
+ * function (on a 68881/68882). */
+static bool trans_in(const machine *m, uint32_t lo, uint32_t hi)
+{
+    for (uint32_t a = lo; a + 4 <= hi; a += 2)
+        if (trans_at(m, a))
+            return true;
+    return false;
 }
 
 /* Whether the instruction at pc is a transcendental function the FPU
@@ -760,7 +807,7 @@ static bool trans_at(const machine *m, uint32_t pc)
     /* FPm,FPn (000) or <ea>,FPn (010) */
     if ((cmd & 0xA000) != 0)
         return false;
-    return transcendental(cmd & 0x7F);
+    return fop_transcendental(cmd & 0x7F);
 }
 
 static void print_state(const state *s)
@@ -798,6 +845,40 @@ static const char *fpu_name(relevo_fpu f)
 }
 
 static uint64_t seed;
+
+/* After a difference on the JIT: the smallest budget that shows it, and
+ * the instructions the C side ran up to there, one at a time. */
+static void jit_trace(machine *x, machine *y, const state *s, uint64_t budget,
+                      bool full_mem)
+{
+    uint64_t b;
+    for (b = 1; b <= budget; b++) {
+        restore(x, full_mem);
+        restore(y, full_mem);
+        load_state(x, s);
+        load_state(y, s);
+        relevo_status sx = x->api->relevo_run(x->cpu, b);
+        relevo_status sy = y->api->relevo_run(y->cpu, b);
+        if (!compare_cpus(x, y, sx, sy, true, false)
+            || !compare_mem(x, y, full_mem, false))
+            break;
+    }
+    printf("  first seen with budget %" PRIu64 "; the C side, step by step:\n",
+           b);
+    restore(y, full_mem);
+    load_state(y, s);
+    for (uint64_t i = 0; i < b && i < 64; i++) {
+        relevo_regs *r = y->api->relevo_get_regs(y->cpu);
+        uint32_t pc = r->pc;
+        printf("    %08" PRIX32 ":", pc);
+        if (pc <= MEM_SIZE - 6)
+            for (uint32_t a = pc; a < pc + 6; a += 2)
+                printf(" %04X", (unsigned)(y->mem[a] << 8 | y->mem[a + 1]));
+        printf("  SR %04X A7 %08" PRIX32, r->sr, r->a[7]);
+        relevo_status st = y->api->relevo_run(y->cpu, 1);
+        printf("  -> %d\n", (int)st);
+    }
+}
 
 static bool run_case(machine *x, machine *y, unsigned maxlen, bool full_mem)
 {
@@ -875,6 +956,10 @@ static bool run_case(machine *x, machine *y, unsigned maxlen, bool full_mem)
     s.r.fpsr = rnd() & 0x0FFFFFF8u;
     s.r.fpiar = rnd();
     s.ipl = chance(80) ? 0 : rn(8);
+    if (fpu != RELEVO_FPU_NONE) {
+        s.fpu_pending = chance(4) ? 48 + rn(7) : 0;
+        s.fpu_null = chance(10);
+    }
 
     restore(x, full_mem);
     restore(y, full_mem);
@@ -883,7 +968,30 @@ static bool run_case(machine *x, machine *y, unsigned maxlen, bool full_mem)
     uint64_t budget = len + (chance(30) ? rn(20) : 0);
     cases++;
     bool ok = true;
-    for (uint64_t i = 0; i < budget; i++) {
+    if (jit_mode) {
+        uint64_t before = y->api->relevo_instructions(y->cpu);
+        relevo_status sx = x->api->relevo_run(x->cpu, budget);
+        relevo_status sy = y->api->relevo_run(y->cpu, budget);
+        bool trans = trans_in(y, CODE, CODE_END);
+        steps += y->api->relevo_instructions(y->cpu) - before;
+        if (!compare_cpus(x, y, sx, sy, trans, false)) {
+            printf("crdiff %s, %s, -J %s, seed 0x%" PRIX64 ": case %lu"
+                   " differs%s\n", model_name(model), fpu_name(fpu),
+                   jit_mode == 2 ? "both" : "rust", seed, cases,
+                   trans ? " (a transcendental function in the code)" : "");
+            compare_cpus(x, y, sx, sy, trans, true);
+            ok = false;
+        } else if (!compare_mem(x, y, full_mem, false)) {
+            printf("crdiff %s, %s, -J %s, seed 0x%" PRIX64 ": case %lu"
+                   " differs in memory\n", model_name(model), fpu_name(fpu),
+                   jit_mode == 2 ? "both" : "rust", seed, cases);
+            compare_mem(x, y, full_mem, true);
+            ok = false;
+        }
+        if (!ok)
+            jit_trace(x, y, &s, budget, full_mem);
+    }
+    for (uint64_t i = 0; i < budget && !jit_mode; i++) {
         if (chance(3)) {
             unsigned ipl = rn(8);
             x->api->relevo_set_ipl(x->cpu, ipl);
@@ -953,6 +1061,7 @@ static int run_config(unsigned long n, unsigned maxlen)
         return -1;
     }
     gen_fpu = fpu;
+    gen_no_trans = jit_mode != 0;
     cases = steps = trans_steps = trans_differ = trans_max_ulps = trans_inex = 0;
     restore(&x, true);
     restore(&y, true);
@@ -963,9 +1072,10 @@ static int run_config(unsigned long n, unsigned maxlen)
             break;
         }
     if (result == 0) {
-        printf("crdiff %s, %s: %lu cases of up to %u instructions (%lu run),"
-               " all equal", model_name(model), fpu_name(fpu), cases, maxlen,
-               steps);
+        printf("crdiff %s, %s%s: %lu cases of up to %u instructions (%lu"
+               " run), all equal", model_name(model), fpu_name(fpu),
+               jit_mode == 2 ? ", both JITs" : jit_mode ? ", Rust JIT" : "",
+               cases, maxlen, steps);
         if (trans_steps != 0)
             printf("; %lu transcendental, %lu of them within %u ulps (max %lu)",
                    trans_steps, trans_differ, ulps, trans_max_ulps);
@@ -1028,6 +1138,9 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-u") == 0 && v != NULL) {
             ulps = (unsigned)strtoul(v, NULL, 10);
             i++;
+        } else if (strcmp(argv[i], "-J") == 0 && v != NULL) {
+            jit_mode = strcmp(v, "both") == 0 ? 2 : 1;
+            i++;
         } else if (strcmp(argv[i], "-T") == 0) {
             strict = true;
         } else if (strcmp(argv[i], "-a") == 0) {
@@ -1035,7 +1148,7 @@ int main(int argc, char **argv)
         } else {
             fprintf(stderr, "usage: crdiff [-m MODEL] [-f none|68881|68882|"
                             "internal] [-a] [-n CASES] [-k MAXLEN] [-s SEED]"
-                            " [-g PERCENT] [-u ULPS] [-T]\n");
+                            " [-g PERCENT] [-u ULPS] [-T] [-J rust|both]\n");
             return 2;
         }
     }
