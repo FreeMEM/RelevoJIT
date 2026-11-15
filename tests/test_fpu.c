@@ -16,8 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/cpu.h"
-#include "../src/fpx.h"
+#include "cpu.h"
+#include "fpx.h"
 #include "check.h"
 #include "tests.h"
 

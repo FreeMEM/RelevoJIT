@@ -27,7 +27,7 @@
 #include <string.h>
 
 #include "relevo.h"
-#include "../src/jit/jit.h"
+#include "jit/jit.h"
 
 #define MEM_SIZE    0x1000000u
 #define CODE        0x10000u        /* where the instructions go */

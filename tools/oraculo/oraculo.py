@@ -1230,7 +1230,8 @@ def run_emu68(names):
 
 
 def run_relevo(names, cpu, limit):
-    exe = ROOT / "build" / "oraculo"
+    # make oraculo says which build (IMPL) to run
+    exe = Path(os.environ.get("RELEVO_ORACULO", ROOT / "build" / "c" / "oraculo"))
     status = 0
     for name in names:
         r = subprocess.run([str(exe), "-d", cpu, str(TESTS / f"{name}.bin")],

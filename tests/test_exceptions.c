@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/cpu.h"
+#include "cpu.h"
 #include "check.h"
 #include "tests.h"
 

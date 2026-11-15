@@ -11,7 +11,7 @@
  */
 #include <string.h>
 
-#include "../src/cache.h"
+#include "cache.h"
 #include "check.h"
 #include "tests.h"
 

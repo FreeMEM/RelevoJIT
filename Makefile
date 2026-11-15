@@ -1,6 +1,12 @@
 # RelevoJIT
 #
-#   make                build/librelevo.a and build/sst
+# The library is being rewritten in Rust (docs/REESCRITURA.md). The same C
+# tests (tests/) run against either version:
+#
+#   IMPL=rust (default)  the Rust crate (Cargo.toml, src/), built with cargo
+#   IMPL=c               the C version (c/src/), until the Rust one matches it
+#
+#   make                build the library, build/$(IMPL)/sst and the other tools
 #   make test           unit tests, the oracle bench and the JIT against the
 #                       interpreter (and the NOP SingleStepTests, if downloaded)
 #   make data           download SingleStepTests/m68000 (tools/datos.sh)
@@ -8,48 +14,75 @@
 #   make jitdiff        a longer run of the JIT against the interpreter
 #   make bench          speed of the JIT against the interpreter
 #   make oraculo        regenerate the oracle bench (tools/oraculo: FS-UAE, Emu68)
+#   make c-test         any target with c- in front: the same on the C version
 #   make CC=clang       any C11 compiler; objects are rebuilt when CC changes
 #   make clean
+#
+# What the Rust version does not have yet is skipped, with a notice: its
+# unit tests in tests/skip_rust.c, and here the runs that need it.
+
+IMPL ?= c
+CARGO ?= cargo
 
 CC ?= cc
 CFLAGS ?= -O2
 WARNINGS := -Wall -Wextra -Werror -pedantic
 ALL_CFLAGS := -std=c11 $(WARNINGS) $(CFLAGS)
-CPPFLAGS += -Iinclude
+# The tests include the C library's internal headers (c/src) for a few
+# constants and test hooks.
+CPPFLAGS += -Iinclude -Ic/src
 DEPFLAGS = -MMD -MP
 # libm: the FPU's transcendental functions (long double)
 LDLIBS := -lm
 
-BUILD := build
-LIB := $(BUILD)/librelevo.a
+BUILD := build/$(IMPL)
 
-LIB_SRC := $(wildcard src/*.c src/interp/*.c src/jit/*.c src/jit/x86_64/*.c)
 TEST_COMMON := tests/json.c tests/sst_load.c tests/sst_run.c
-UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
-            tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c tests/test_sst.c \
-            tests/test_jit.c \
-            $(TEST_COMMON)
 SST_SRC := tests/sst.c $(TEST_COMMON)
 ORACLE_SRC := tests/oraculo.c
 JITDIFF_SRC := tests/jitdiff.c
 BENCH_SRC := tests/bench.c
+ORACLE_DATA := $(wildcard tests/oraculo/*.txt)
+SST_DATA := tests/datos/m68000
 
+ifeq ($(IMPL),c)
+LIB := $(BUILD)/librelevo.a
+LIB_SRC := $(wildcard c/src/*.c c/src/interp/*.c c/src/jit/*.c c/src/jit/x86_64/*.c)
 LIB_OBJ := $(LIB_SRC:%.c=$(BUILD)/%.o)
+UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
+            tests/test_010.c tests/test_020.c tests/test_fpu.c tests/test_json.c \
+            tests/test_sst.c tests/test_jit.c tests/skip_c.c $(TEST_COMMON)
+EXTRA_TOOLS :=
+BENCH_FLAGS ?=
+else ifeq ($(IMPL),rust)
+LIB := target/release/librelevo.a
+LIB_OBJ :=
+# What the Rust standard library needs from the system (cargo rustc
+# --release --crate-type staticlib -- --print native-static-libs).
+LDLIBS += -lgcc_s -lutil -lrt -lpthread -ldl -lc
+UNIT_SRC := tests/main.c tests/test_api.c tests/test_exceptions.c \
+            tests/test_010.c tests/test_json.c tests/test_sst.c tests/test_jit.c \
+            tests/skip_rust.c $(TEST_COMMON)
+EXTRA_TOOLS := $(BUILD)/abi
+# Only the 68000 so far (RR1)
+BENCH_FLAGS ?= -m 68000
+else
+$(error IMPL must be rust or c)
+endif
+
 UNIT_OBJ := $(UNIT_SRC:%.c=$(BUILD)/%.o)
 SST_OBJ := $(SST_SRC:%.c=$(BUILD)/%.o)
 ORACLE_OBJ := $(ORACLE_SRC:%.c=$(BUILD)/%.o)
 JITDIFF_OBJ := $(JITDIFF_SRC:%.c=$(BUILD)/%.o)
 BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
-ORACLE_DATA := $(wildcard tests/oraculo/*.txt)
-
-SST_DATA := tests/datos/m68000
+ABI_OBJ := $(BUILD)/tests/abi.o
 
 # make sst JIT=1 runs SingleStepTests on the JIT engine.
 SST_FLAGS := $(if $(JIT),-j,)
 
 .PHONY: all test data sst oraculo jitdiff bench clean FORCE
 
-all: $(LIB) $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff $(BUILD)/bench
+all: $(LIB) $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff $(BUILD)/bench $(EXTRA_TOOLS)
 
 # Rebuild everything when the compiler or its flags change.
 $(BUILD)/compiler: FORCE
@@ -61,9 +94,15 @@ $(BUILD)/%.o: %.c $(BUILD)/compiler
 	@mkdir -p $(dir $@)
 	$(CC) $(ALL_CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c $< -o $@
 
+ifeq ($(IMPL),c)
 $(LIB): $(LIB_OBJ)
 	rm -f $@
 	$(AR) rcs $@ $^
+else
+# cargo knows what is out of date; it leaves the library alone if nothing is.
+$(LIB): FORCE
+	$(CARGO) build --release --quiet
+endif
 
 $(BUILD)/run_tests: $(UNIT_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(UNIT_OBJ) $(LIB) $(LDLIBS)
@@ -80,6 +119,10 @@ $(BUILD)/jitdiff: $(JITDIFF_OBJ) $(LIB)
 $(BUILD)/bench: $(BENCH_OBJ) $(LIB)
 	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(BENCH_OBJ) $(LIB) $(LDLIBS)
 
+$(BUILD)/abi: $(ABI_OBJ) $(LIB)
+	$(CC) $(ALL_CFLAGS) $(LDFLAGS) -o $@ $(ABI_OBJ) $(LIB) $(LDLIBS)
+
+ifeq ($(IMPL),c)
 test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	$(BUILD)/run_tests
 	$(BUILD)/oraculo $(ORACLE_DATA)
@@ -97,9 +140,23 @@ test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/oraculo $(BUILD)/jitdiff
 	else \
 	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
 	fi
+else
+test: $(BUILD)/run_tests $(BUILD)/sst $(BUILD)/abi
+	$(BUILD)/abi
+	$(BUILD)/run_tests
+	@echo 'SKIPPED: the oracle bench (68020 and 68040: RR2) and jitdiff (the JIT: RR3)'
+	@if [ -f $(SST_DATA)/NOP.json ]; then \
+	    echo '$(BUILD)/sst $(SST_DATA)/NOP.json'; \
+	    $(BUILD)/sst $(SST_DATA)/NOP.json; \
+	    echo 'SKIPPED: sst -j (the JIT: RR3)'; \
+	else \
+	    echo 'SingleStepTests not downloaded (make data): NOP check skipped'; \
+	fi
+endif
 
 # Many more random cases, each model, both ways of swapping bytes and of
 # keeping the condition codes.
+ifeq ($(IMPL),c)
 jitdiff: $(BUILD)/jitdiff
 	for m in 68000 68010 68020 68030 68040; do \
 	    $(BUILD)/jitdiff -m $$m -n 200000 -k 1 || exit 1; \
@@ -108,9 +165,13 @@ jitdiff: $(BUILD)/jitdiff
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 16 -e || exit 1; \
 	    $(BUILD)/jitdiff -m $$m -n 50000 -k 64 || exit 1; \
 	done
+else
+jitdiff:
+	@echo 'SKIPPED: jitdiff needs the JIT (RR3); make c-jitdiff runs it on the C version'
+endif
 
 bench: $(BUILD)/bench
-	$(BUILD)/bench
+	$(BUILD)/bench $(BENCH_FLAGS)
 
 data:
 	tools/datos.sh
@@ -124,14 +185,19 @@ sst: $(BUILD)/sst
 # with the real Kickstart as a 68020 and as a 68040 (DASH_KICKSTART) and
 # writes tests/oraculo/*.txt; then compares Emu68 (jit-host) with the 68040.
 oraculo: $(BUILD)/oraculo
-	python3 tools/oraculo/oraculo.py gen
-	python3 tools/oraculo/oraculo.py fsuae --cpu 68020
-	python3 tools/oraculo/oraculo.py fsuae --cpu 68040
-	-python3 tools/oraculo/oraculo.py emu68
+	RELEVO_ORACULO=$(BUILD)/oraculo python3 tools/oraculo/oraculo.py gen
+	RELEVO_ORACULO=$(BUILD)/oraculo python3 tools/oraculo/oraculo.py fsuae --cpu 68020
+	RELEVO_ORACULO=$(BUILD)/oraculo python3 tools/oraculo/oraculo.py fsuae --cpu 68040
+	-RELEVO_ORACULO=$(BUILD)/oraculo python3 tools/oraculo/oraculo.py emu68
 	$(BUILD)/oraculo $(ORACLE_DATA)
 
+# c-test, c-sst, c-bench...: the same target on the C version.
+c-%:
+	$(MAKE) IMPL=c $*
+
 clean:
-	rm -rf $(BUILD)
+	rm -rf build
+	$(CARGO) clean
 
 -include $(LIB_OBJ:.o=.d) $(UNIT_OBJ:.o=.d) $(SST_OBJ:.o=.d) $(ORACLE_OBJ:.o=.d) \
-         $(JITDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d)
+         $(JITDIFF_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) $(ABI_OBJ:.o=.d)

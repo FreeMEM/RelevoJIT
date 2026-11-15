@@ -9,7 +9,7 @@
 #include "check.h"
 #include "relevo.h"
 #include "tests.h"
-#include "../src/jit/jit.h"
+#include "jit/jit.h"
 
 #define MEM_SIZE 0x100000u
 #define CODE     0x1000u

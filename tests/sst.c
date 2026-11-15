@@ -19,7 +19,7 @@
 #include <string.h>
 
 #include "sst_run.h"
-#include "../src/jit/jit.h"
+#include "jit/jit.h"
 
 static const char *base_name(const char *path, char *buf, size_t size)
 {

@@ -242,8 +242,10 @@ int main(int argc, char **argv)
             status = 1;
             continue;
         }
+        double mi = (double)a.insns / a.seconds / 1e6;
         if (!b.ok && b.insns == 0) {
-            printf("%-8s no JIT here\n", p->name);
+            printf("%-8s %12" PRIu64 " %6.0f MIPS %10s\n", p->name, a.insns, mi,
+                   "no JIT");
             continue;
         }
         bool same = b.ok && a.insns == b.insns
@@ -252,7 +254,6 @@ int main(int argc, char **argv)
                  && a.regs.sr == b.regs.sr
                  && memcmp(a.regs.fp, b.regs.fp, sizeof a.regs.fp) == 0
                  && a.regs.fpsr == b.regs.fpsr;
-        double mi = (double)a.insns / a.seconds / 1e6;
         double mj = (double)b.insns / b.seconds / 1e6;
         printf("%-8s %12" PRIu64 " %6.0f MIPS %6.0f MIPS %7.1fx%s\n",
                p->name, a.insns, mi, mj, mj / mi,

@@ -108,3 +108,12 @@
 
 #define DECLARE_TEST(name) void test_##name(void);
 TEST_LIST(DECLARE_TEST)
+
+/* Tests that the library under test cannot run yet, with the reason
+ * (tests/skip_c.c, tests/skip_rust.c). The list ends with { NULL, NULL }. */
+typedef struct test_skip {
+    const char *name;
+    const char *why;
+} test_skip;
+
+extern const test_skip tests_skipped[];
