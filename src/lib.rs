@@ -21,6 +21,8 @@ extern crate std;
 pub mod capi;
 mod cpu;
 mod exception;
+mod fpx;
+mod hooks;
 mod interp;
 mod memory;
 mod window;
