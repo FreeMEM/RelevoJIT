@@ -1,6 +1,6 @@
 build/
 target/
-tests/datos/
+tests/datos
 *.o
 *.a
 .worktrees/
