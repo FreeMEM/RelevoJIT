@@ -252,8 +252,11 @@ int main(int argc, char **argv)
                  && memcmp(a.regs.d, b.regs.d, sizeof a.regs.d) == 0
                  && memcmp(a.regs.a, b.regs.a, sizeof a.regs.a) == 0
                  && a.regs.sr == b.regs.sr
-                 && memcmp(a.regs.fp, b.regs.fp, sizeof a.regs.fp) == 0
                  && a.regs.fpsr == b.regs.fpsr;
+        /* field by field: relevo_fpreg has padding */
+        for (int k = 0; k < 8; k++)
+            same = same && a.regs.fp[k].mantissa == b.regs.fp[k].mantissa
+                && a.regs.fp[k].sign_exponent == b.regs.fp[k].sign_exponent;
         double mj = (double)b.insns / b.seconds / 1e6;
         printf("%-8s %12" PRIu64 " %6.0f MIPS %6.0f MIPS %7.1fx%s\n",
                p->name, a.insns, mi, mj, mj / mi,

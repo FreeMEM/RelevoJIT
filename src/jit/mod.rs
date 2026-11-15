@@ -795,6 +795,8 @@ struct CpuInfo {
     align_check: bool,
 }
 
+// (translated code calls some of these: dead elsewhere)
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 impl Cpu {
     fn cpu_info(&self) -> CpuInfo {
         CpuInfo {

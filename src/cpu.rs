@@ -2,10 +2,9 @@
 //! The state of a CPU, the run loop and what the API does with them.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 
-use crate::capi::{Handle, relevo_host};
+use crate::capi::{Handle, SharedRef, relevo_host};
 use crate::interp::{self, Handler};
 use crate::jit::{Ind, Jit};
 use crate::window::Window;
@@ -121,7 +120,8 @@ pub struct Regs {
 
 /// What other threads may touch while the CPU runs (`relevo_set_ipl()`,
 /// `relevo_request_stop()`). It lives apart from [`Cpu`], which belongs to
-/// the thread running it.
+/// the thread running it, next to it in the handle.
+#[repr(C)]
 #[derive(Default)]
 pub struct Shared {
     pub ipl: AtomicU32,
@@ -165,9 +165,8 @@ pub struct Cpu {
     /// once when fetched: this stands for the 68000 refilling its prefetch
     /// queue.
     pub cycles: u64,
-    /// JIT: `shared.attention`, the JIT's map of pages and its cache of
-    /// indirect targets (null without the JIT).
-    pub jit_attn: *const AtomicU32,
+    /// JIT: the JIT's map of pages and its cache of indirect targets (null
+    /// without the JIT).
     pub jit_map: *const u8,
     pub jit_ind: *const Ind,
     /// JIT: condition codes left in x86 form by translated code, newer
@@ -196,7 +195,7 @@ pub struct Cpu {
     pub host: relevo_host,
     /// What the host knows this CPU as (`relevo_cpu *`), for its functions.
     pub handle: *mut Handle,
-    pub shared: Arc<Shared>,
+    pub shared: SharedRef,
 
     /// Address of the instruction being run
     pub insn_pc: u32,
@@ -246,7 +245,7 @@ pub struct Cpu {
 impl Cpu {
     /// A CPU on the window `mem` (already holding the host's memory block);
     /// None if it asks for the JIT and there is none.
-    pub fn new(cfg: &Config, mem: Window, shared: Arc<Shared>) -> Option<Cpu> {
+    pub fn new(cfg: &Config, mem: Window, shared: SharedRef) -> Option<Cpu> {
         let mut addr_mask = cfg.address_mask;
         if addr_mask == 0 {
             addr_mask = if cfg.model <= Model::M68010 {
@@ -260,11 +259,9 @@ impl Cpu {
             _ => 0xA71F,                                             // T1 S
         };
         let (table, _, legal) = interp::build_table(cfg.model, cfg.fpu);
-        let jit_attn: *const AtomicU32 = &shared.attention;
         let mut c = Cpu {
             budget: 0,
             cycles: 0,
-            jit_attn,
             jit_map: core::ptr::null(),
             jit_ind: core::ptr::null(),
             jit_ccr: 0,

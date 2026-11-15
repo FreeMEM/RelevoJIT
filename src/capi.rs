@@ -3,8 +3,10 @@
 //! into the host's functions. One of the two modules with `unsafe`.
 //!
 //! A `relevo_cpu *` is a [`Handle`]: the [`Shared`] part that other threads
-//! may touch, and the [`Cpu`] that belongs to the thread running it. Each
-//! entry point makes a fresh reference from the pointer it gets.
+//! may touch, and the [`Cpu`] that belongs to the thread running it, next
+//! to each other (translated code reaches the attention flag from the CPU's
+//! address). Each entry point makes a fresh reference from the pointer it
+//! gets.
 //!
 //! The host's functions may call back into the API (`relevo_get_regs()`,
 //! `relevo_read()`, `relevo_map()`...) with that pointer while the CPU runs,
@@ -16,7 +18,6 @@
 #![allow(non_camel_case_types)]
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use core::cell::UnsafeCell;
 use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::mem::{align_of, offset_of, size_of};
@@ -68,9 +69,40 @@ pub struct relevo_config {
     pub host: relevo_host,
 }
 
+#[repr(C)]
 pub struct Handle {
-    shared: Arc<Shared>,
+    shared: Shared,
     cpu: UnsafeCell<Cpu>,
+}
+
+/// Where `Shared::attention` is from the CPU (translated code reads it).
+pub const ATTENTION_FROM_CPU: i32 = (offset_of!(Handle, shared) + offset_of!(Shared, attention))
+    as i32
+    - offset_of!(Handle, cpu) as i32;
+
+/// The shared part of the handle a CPU lives in, as the CPU sees it. The
+/// CPU is inside the handle, so the reference stays valid as long as the
+/// CPU; others only touch the shared part through `&Shared` (atomics).
+pub struct SharedRef(*const Shared);
+
+impl SharedRef {
+    /// A placeholder, until relevo_create() points it at the handle. Never
+    /// dereferenced before that.
+    pub fn unset() -> SharedRef {
+        SharedRef(core::ptr::null())
+    }
+}
+
+impl core::ops::Deref for SharedRef {
+    type Target = Shared;
+
+    #[inline(always)]
+    fn deref(&self) -> &Shared {
+        debug_assert!(!self.0.is_null());
+        // SAFETY: set by relevo_create() to the `shared` field of the
+        // handle that holds this CPU (see above).
+        unsafe { &*self.0 }
+    }
 }
 
 // ---- Layout --------------------------------------------------------------
@@ -318,7 +350,6 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
     let Some((model, fpu)) = config_valid(cfg) else {
         return core::ptr::null_mut();
     };
-    let shared = Arc::new(Shared::default());
     let config = Config {
         model,
         fpu,
@@ -331,15 +362,19 @@ pub unsafe extern "C" fn relevo_create(config: *const relevo_config) -> *mut rel
     };
     // SAFETY: the host's memory block, as relevo.h asks of it.
     let window = unsafe { Window::new(config.memory, config.memory_size) };
-    let Some(cpu) = Cpu::new(&config, window, Arc::clone(&shared)) else {
+    let Some(cpu) = Cpu::new(&config, window, SharedRef::unset()) else {
         return core::ptr::null_mut();
     };
     let handle = Box::into_raw(Box::new(Handle {
-        shared,
+        shared: Shared::default(),
         cpu: UnsafeCell::new(cpu),
     }));
     // SAFETY: just made; nobody else has it yet.
-    unsafe { cpu_mut(handle).handle = handle };
+    unsafe {
+        let c = cpu_mut(handle);
+        c.handle = handle;
+        c.shared = SharedRef(&raw const (*handle).shared);
+    }
     handle
 }
 

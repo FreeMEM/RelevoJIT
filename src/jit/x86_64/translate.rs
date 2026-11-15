@@ -101,7 +101,7 @@ const OFF_SR: i32 = (offset_of!(Cpu, r) + offset_of!(Regs, sr)) as i32;
 const OFF_FPCR: i32 = (offset_of!(Cpu, r) + offset_of!(Regs, fpcr)) as i32;
 const OFF_BUDGET: i32 = offset_of!(Cpu, budget) as i32;
 const OFF_CYCLES: i32 = offset_of!(Cpu, cycles) as i32;
-const OFF_ATTN: i32 = offset_of!(Cpu, jit_attn) as i32;
+const OFF_ATTN: i32 = crate::capi::ATTENTION_FROM_CPU;
 const OFF_IR: i32 = offset_of!(Cpu, ir) as i32;
 const OFF_MAP: i32 = offset_of!(Cpu, jit_map) as i32;
 const OFF_IND: i32 = offset_of!(Cpu, jit_ind) as i32;
@@ -760,8 +760,7 @@ impl Tr {
         self.b
             .alu_mi(XA_CMP, 8, xm(RCPU, OFF_BUDGET), self.n as i32);
         self.jcc(XC_B, out);
-        self.b.load64(RAX, xm(RCPU, OFF_ATTN));
-        self.b.alu_mi(XA_CMP, 4, xm(RAX, 0), 0);
+        self.b.alu_mi(XA_CMP, 4, xm(RCPU, OFF_ATTN), 0);
         self.jcc(XC_NE, out);
         self.jmp(self.loop_);
         self.bind(out);
@@ -2279,8 +2278,7 @@ impl Tr {
         // (SR is in R14 already).
         self.b.alu_mi(XA_CMP, 8, xm(RCPU, OFF_BUDGET), n as i32);
         self.jcc(XC_B, self.entry_out);
-        self.b.load64(RAX, xm(RCPU, OFF_ATTN));
-        self.b.alu_mi(XA_CMP, 4, xm(RAX, 0), 0);
+        self.b.alu_mi(XA_CMP, 4, xm(RCPU, OFF_ATTN), 0);
         self.jcc(XC_NE, self.entry_out);
         for r in 0..16 {
             if self.used & (1 << r) != 0 {

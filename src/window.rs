@@ -105,6 +105,7 @@ impl Window {
         self.size
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
     /// The start of the memory block (null if none): translated code
     /// addresses the 68k memory from it.
     pub fn base(&self) -> *mut u8 {

@@ -14,6 +14,7 @@
 //! allowed between `begin_write()` and `end_write()`.
 #![allow(unsafe_code)]
 
+#[cfg_attr(not(all(feature = "std", any(unix, windows))), allow(dead_code))]
 pub struct CodeMem {
     /// where code is written
     rw: *mut u8,

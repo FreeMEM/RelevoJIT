@@ -584,6 +584,7 @@ impl Cpu {
 
 // ---- For the JIT ---------------------------------------------------------------
 
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 impl Cpu {
     /// The general FPU instruction at `pc` with command word and effective
     /// address field `cmd_ea` (cmd | ea << 16), for a translated block:

@@ -163,8 +163,12 @@ fn config_validation() {
         assert!(relevo_create(&cfg).is_null());
         cfg.model = 0;
         cfg.fpu = 0;
-        // Not yet: the JIT (RR3).
+        // The JIT, where this machine runs it; no third engine.
         cfg.engine = 1;
+        let c = relevo_create(&cfg);
+        assert_eq!(c.is_null(), !crate::jit::available());
+        relevo_destroy(c);
+        cfg.engine = 2;
         assert!(relevo_create(&cfg).is_null());
         cfg.engine = 0;
         let c = relevo_create(&cfg);
