@@ -84,12 +84,15 @@ del anfitrión 143. Son programas de juguete; hay que medir en los reales del pu
 | V6 | Memoria por fallos de página | Velocidad |
 | V7 | Registros entre bloques y pila de retornos | Velocidad |
 | V8 | 68060 de verdad, T0, estado guardable, versión de la interfaz | Compatibilidad |
+| V9 | MMU del 68030 y del 68040 | Compatibilidad |
 
 La velocidad va después de V2 y V3 a propósito: V5 a V7 tocan el corazón del JIT, y sin programas reales ni
 pruebas de aguante no se sabría si rompen algo.
 
-## Para decidir el usuario
+## Decisiones del usuario (2026-11-15)
 
-1. ¿Entra la MMU del 68030/040? Recomendado: no, de momento.
-2. ¿El 68060 es objetivo o basta hasta el 68040? Recomendado: hasta el 040; el 060, experimental.
-3. ¿Hay acceso a un Amiga real con 68020 o 68030 para la segunda referencia?
+1. **La MMU del 68030 y del 68040 entra** (paso V9: traducción de direcciones, `PMOVE`, `PFLUSH`, `PTEST`, tablas
+   de páginas, fallos de acceso con sus marcos; en el JIT, con la TLB por software o las tablas del anfitrión).
+2. **El 68060 es objetivo**: sus trampas de instrucción no implementada, sus registros y marcos, de verdad (V8).
+3. Se sigue este orden, con un solo agente a la vez.
+4. Amiga real con 68020/030 para segunda referencia: sin contestar.

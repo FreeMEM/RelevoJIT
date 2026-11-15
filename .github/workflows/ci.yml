@@ -1,0 +1,39 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        san: ["", "-fsanitize=address,undefined -fno-sanitize-recover=undefined"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests, oracle bench and JIT differential
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" test
+      - name: SingleStepTests/m68000, interpreter and JIT
+        if: matrix.san == ''
+        run: |
+          make data
+          make CC=${{ matrix.cc }} sst
+          make CC=${{ matrix.cc }} sst JIT=1
+
+  # Windows is written but was never run before this job: it may fail until V1 is done.
+  windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: make mingw-w64-ucrt-x86_64-gcc
+      - run: make CC=gcc test
