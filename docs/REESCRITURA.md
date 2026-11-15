@@ -20,7 +20,7 @@ versión en C.
 - `unsafe` solo en módulos marcados (memoria de código, entrada al código generado, la ventana de memoria del 68k,
   la frontera C); el resto con `#![deny(unsafe_code)]`, como el kernel de DashOS.
 - Sala limpia igual que en `DISEÑO.md`. La versión en C (propia) se puede leer y traducir.
-- La versión en C queda en `c/` hasta que la de Rust la iguale en todo; entonces se retira.
+- La versión en C queda en `c/` hasta que la de Rust la iguale en todo; entonces se retira (hecho en RR4).
 
 ## Pasos
 
@@ -30,13 +30,17 @@ versión en C.
 | RR1 | Intérprete 68000, excepciones, ciclos | SingleStepTests 317 500/317 500 con ciclos | [x] 2026-11-15 |
 | RR2 | 68010 a 68040 (sin MMU) y la FPU (`fpx`) | Pruebas propias y banco del oráculo iguales | [x] 2026-11-15 |
 | RR3 | JIT x86-64 (emisor, bloques, encadenado, banderas perezosas, FPU) | `jitdiff`, `sst JIT=1` y `bench` sin bajar | [x] 2026-11-15 |
-| RR4 | Diferencial al azar C contra Rust; se retira la versión en C | Millones de casos iguales | [ ] |
+| RR4 | Diferencial al azar C contra Rust; se retira la versión en C | Millones de casos iguales | [x] 2026-11-15 |
 
-Cómo va (RR0 a RR3, ver la bitácora del 2026-11-15): `make` compila el crate y enlaza contra él las pruebas en C;
-`make c-test` (cualquier objetivo con `c-` delante) hace lo mismo con la versión en C de `c/`. Desde RR3 la de Rust
-lo tiene todo y `make test` corre lo mismo con las dos (nada se salta). `make crdiff` compara las dos bibliotecas con
-código al azar en todos los modelos: los intérpretes paso a paso, y el JIT de Rust contra el intérprete de C
-(`-J rust`) y contra el JIT de C (`-J both`).
+Cómo quedó (ver la bitácora del 2026-11-15): la biblioteca es solo el crate. `make` lo compila con cargo y enlaza
+contra él las pruebas en C de `tests/`, que usan `include/relevo.h` y, para los ganchos de prueba (estadísticas del
+JIT, `fpx_*`, la tabla de códigos, el estado oculto de la FPU), `tests/hooks.h`.
+
+La versión en C se retiró en RR4, después de 47,3 millones de casos al azar iguales (`crdiff`, con las dos
+bibliotecas enlazadas en el mismo programa). Quien quiera mirarla: la tiene entera `c206254`, el último commit de
+`main` antes de RR4 (`git show c206254:c/src/cpu.h`, o `git checkout c206254 -- c` en una rama aparte). `crdiff` se quedó en
+`sysdiff`: el mismo generador (68010 a 68060, FPU, estado del sistema, basura como código) con el JIT contra el
+intérprete de la misma biblioteca.
 
 Después siguen V2 a V9 de `REVISION.md` (programas reales, aguante, x87, memoria por fallos de página, 68060,
 MMU), ya en Rust.

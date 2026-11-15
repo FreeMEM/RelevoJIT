@@ -1,11 +1,10 @@
 # RelevoJIT
 
-A Motorola 680x0 interpreter and x86-64 JIT, as a C library.
+A Motorola 680x0 interpreter and x86-64 JIT, as a Rust crate with a C interface.
 
-It is being rewritten in Rust (`docs/REESCRITURA.md`, Spanish): the crate in `src/` exports the same C interface,
-and the same tests run against both. The Rust version has everything described below: the interpreter (68000 to
-68060 and the FPU) and the x86-64 JIT. The C version stays in `c/` as the reference until a long random
-differential run retires it.
+It was first written in C and then rewritten in Rust (`docs/REESCRITURA.md`, Spanish). The crate in `src/` exports
+the same C interface, and the C tests in `tests/` link against it. The C version was retired once a long random
+differential run found both equal; it is in the git history.
 
 RelevoJIT runs 68k code on x86-64 machines. The 68k memory stays big-endian, as on the real CPU; the JIT swaps
 bytes on every access (`MOVBE` where available). It knows nothing about any particular computer: the host gives it
@@ -13,31 +12,34 @@ memory, registers and callbacks for I/O and traps.
 
 Two engines, one API:
 
-- **Interpreter**: portable C11, accurate, the reference for the JIT.
+- **Interpreter**: portable (`no_std`, any CPU), accurate, the reference for the JIT.
 - **JIT**: translates 68k blocks to x86-64.
 
-Status: early work. The 68000 interpreter has its base: every addressing mode, all exceptions (address and bus
-errors with the 68000's long frame, trace, autovectored interrupts, `STOP`, double fault), cycle counts, and the
-data movement and program control instructions, which pass their SingleStepTests/m68000 files entirely, cycles
-included. Arithmetic, logic, shifts, bit operations, BCD, multiply and divide are next.
+Status: the interpreter runs the 68000 to the 68060 (without MMU) and their FPUs; every exception, with the
+68000's cycle counts. It passes SingleStepTests/m68000 entirely, cycles included, and the JIT gives the same
+results. What comes next is in `docs/REVISION.md` (Spanish): real programs, the MMU, the 68060's own traps.
 
 It is the 68k engine of DashOS on x86, in the same way Emu68 is on ARM.
 
 ## Building
 
 ```sh
-make              # the Rust library (cargo) and the C tests linked against it, in build/rust/
-make c-test       # c- in front of any target: the same on the C version (build/c/)
-make CC=clang     # any C11 compiler
-make test         # unit tests, the oracle bench and the JIT against the interpreter (both engines)
+make              # the library (cargo, target/release/librelevo.a) and the C tests linked against it, in build/
+make CC=clang     # any C11 compiler for the tests
+make test         # ABI check, unit tests, the oracle bench and the JIT against the interpreter
 make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
 make sst          # run every SingleStepTests file: passed/total per instruction, and cycles
 make sst JIT=1    # the same on the JIT engine
 make jitdiff      # a long random differential run, JIT against interpreter
-make crdiff       # the Rust library against the C one: interpreters, and the JITs
+make sysdiff      # the same on the machine state: every model and FPU, SR, VBR, frames, host traps
 make bench        # speed of the JIT against the interpreter
 make oraculo      # regenerate the bench against FS-UAE with the real Kickstart (tools/oraculo)
+cargo test        # the crate's own tests (and cargo clippy)
 ```
+
+A C program links with `target/release/librelevo.a` and what the Rust standard library needs from the system (on
+Linux `-lgcc_s -lutil -lrt -lpthread -ldl -lc`; see the Makefile). A Rust program uses the crate directly; without
+its `std` feature it is `no_std` with `alloc`, and has no JIT.
 
 ## Using it
 
@@ -73,7 +75,8 @@ writing the memory block directly, it calls `relevo_invalidate()` for that range
 caches).
 
 With `cfg.fpu` the 68020 and 68030 get a 68881 or 68882 and the 68040 and 68060 their own FPU, in extended
-precision computed in software (`c/src/fpx*.c`); link with `-lm`, which the transcendental functions use.
+precision computed in software (`src/fpx`), the transcendental functions included: the results are the same on
+every host.
 
 Interrupts come from the host with `relevo_set_ipl()`; `relevo_cycles()` gives the 68000 clock cycles spent so
 far. Unmapped pages (`RELEVO_PAGE_NONE`) give the CPU a bus error.

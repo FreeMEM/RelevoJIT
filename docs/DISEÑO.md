@@ -5,6 +5,10 @@ el JIT 68k para x86-64 va en un proyecto aparte, MPL-2.0, como biblioteca; inté
 en memoria y cargados en registros de x86 por bloque; la memoria del 68k en big-endian y el código en
 little-endian, dando la vuelta a los bytes en cada acceso.
 
+Nota (2026-11-15): la biblioteca se escribió en C y después se reescribió en Rust con la misma interfaz C
+(`docs/REESCRITURA.md`); la versión en C se retiró en RR4. Lo que sigue es el diseño de partida, con "C" donde hoy
+es Rust.
+
 ## Qué es
 
 Una biblioteca en C que ejecuta código del Motorola 680x0 en x86-64. Quien la usa (DashOS, un emulador, un

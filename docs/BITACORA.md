@@ -959,3 +959,67 @@ Queda para RR4:
 - Windows: compilar y probar la memoria de código y la convención System V de las retrollamadas.
 - Lo que ya faltaba en C sigue igual en el JIT (ver R7: transcendentales y `FMOVEM` en el intérprete, MOVE con SR,
   `TRAP`, `RTE`, `CHK2`, `CAS2`... cortan el bloque).
+
+### 2026-11-15 — RR4: diferencial final C contra Rust; se retira la versión en C
+
+Diferencial final, antes de retirar nada (`crdiff`, las dos bibliotecas en el mismo programa): las 8 tandas de
+`make crdiff` con la semilla de siempre y con otras cuatro (`-s 0x5eed0001` a `0x5eed0004`), 40 ejecuciones de 11
+configuraciones cada una (68000 a 68060, con y sin sus FPU):
+
+| | Casos | Instrucciones |
+|---|---|---|
+| Intérpretes, paso a paso (`-k 1`, 16, 64, y basura pura `-g 100`) | 33,0 millones | 291,5 millones |
+| JIT de Rust contra intérprete de C (`-J rust`) y contra JIT de C (`-J both`) | 14,3 millones | 222,1 millones |
+| Total | 47,3 millones | 513,5 millones |
+
+Todos iguales. Transcendentales (68881/68882) paso a paso: 157 651, de ellas 13 443 distintas en el último bit,
+dentro de la tolerancia (la de C sale del `long double` de glibc; máximo 2 ulps); ninguna con `INEX2` solo en C.
+
+Hecho:
+
+- `tests/hooks.h`: lo que las pruebas usan además de `include/relevo.h` (vectores de excepción, `interp_fill_table`,
+  `cache_write_cacr`, `relevo_test_fpu_state`, `jit_stats` y sus funciones, `fpx_*`). Sustituye a las cabeceras
+  internas de `c/src` (`cpu.h`, `cache.h`, `fpx.h`, `jit/jit.h`) que incluían `test_*.c`, `sst.c` y `jitdiff.c`.
+  `interp_fill_table` recibe `NULL`: la de Rust no escribe la tabla.
+- Fuera las listas de pruebas saltadas (`tests/skip_c.c`, `tests/skip_rust.c`) y su mecanismo en `main.c`: con una
+  sola biblioteca no tienen sentido.
+- `git rm` de `c/` (35 ficheros). La tiene entera `c206254`, el último commit de `main` antes de RR4.
+- `crdiff` reconvertido en `sysdiff` (`tests/sysdiff.c`): el mismo generador (lo del 68010 al 68060 y la FPU, `RTE`
+  de marcos al azar, VBR, SR con T y M, trampas de línea A y F del anfitrión, `RESET`, basura) y el estado oculto
+  de la FPU, ahora con el JIT contra el intérprete de la misma biblioteca, y con las transcendentales (antes se
+  dejaban fuera con el JIT porque C y Rust las calculan distinto; aquí deben salir idénticas). Sin tolerancias y
+  sin ciclos (los del JIT son estimados). Se retiró el modo paso a paso (intérprete contra sí mismo no prueba
+  nada). `jitdiff` sigue igual: prueba el código traducido más de cerca (`-x`, `-e`); `sysdiff`, el estado de la
+  máquina, y llega al 68060, que `jitdiff` no. `gen_no_trans` y `fop_transcendental` salen de `gen68k`; la
+  secuencia al azar de `jitdiff` no cambia.
+- Makefile solo para Rust: sin `IMPL`, sin `c-%`, sin la biblioteca de C renombrada (`objcopy`); todo en `build/`.
+  `make test`: ABI, unitarias, oráculo con los dos motores, `jitdiff` corto, `sysdiff -a -n 1000 -k 32` y NOP de
+  SingleStepTests. Objetivo nuevo `make sysdiff` (4 tandas, 4,18 millones de casos, 4 minutos).
+- `tools/oraculo/oraculo.py`: por defecto ejecuta `build/oraculo` (antes `build/c/oraculo`) y deja sus ficheros en
+  `build/oraculo.d/` (antes `build/bench/`, que ahora es el ejecutable de `bench`).
+- CI: `make test` con gcc y clang, con y sin ASan/UBSan; clippy y `cargo test`; SingleStepTests con los dos motores
+  (antes el del JIT solo se pasaba con C). Windows compila la biblioteca de Rust con el Rust de MSYS2 (UCRT64) y
+  pasa `make test`; sigue con `continue-on-error`.
+- README, `REESCRITURA.md` (RR4 marcado), `DISEÑO.md` (una nota: hoy es Rust) y los comentarios de `src/` que
+  apuntaban a `c/src`.
+
+Comprobado:
+
+- `make test` con gcc y con clang, con y sin `-fsanitize=address,undefined`: ABI 56/56, 101/101 unitarias, oráculo
+  igual con los dos motores, `jitdiff` y `sysdiff` iguales, NOP 2500/2500 con los dos motores.
+- `make sst` y `make sst JIT=1`, con gcc y con clang: 317 500/317 500 (ciclos exactos en 317 500 con el intérprete
+  y en 251 063 con el JIT, que los estima).
+- `make jitdiff`: 25 tandas, 2,75 millones de casos, iguales. `make sysdiff`: 44 tandas, 4,18 millones de casos
+  (35,6 millones de instrucciones), iguales.
+- `cargo test` 13/13, `cargo clippy --all-targets -D warnings` sin avisos, `cargo fmt --check`. Sin `std` compila
+  como rlib (x86-64 y aarch64).
+- `make bench` (con la máquina cargada por el diferencial): aritmética 5517, copia 1559, bytes 2872, coma flotante
+  85, anfitrión 159 millones de instrucciones por segundo con el JIT.
+- `ci.yml` es YAML válido (comprobado con PyYAML) y cada paso llama a un objetivo que existe.
+- Sin probar: el trabajo de Windows de la CI (aquí no hay objetivo `windows-gnu`; la lista de bibliotecas del
+  sistema para enlazar en Windows del Makefile está sin probar).
+
+Queda (de RR3, sin cambios):
+
+- Sin `std` no hay JIT: DashOS en x86 (sin libc) necesitará que el anfitrión dé la memoria ejecutable.
+- Windows: compilar y probar la memoria de código y la convención System V de las retrollamadas.
