@@ -12,10 +12,24 @@
  * precision. INEX2 is set unless the result is exact (the special values,
  * and integer powers of 2 and 10 in FTWOTOX, FTENTOX, FLOG2 and FLOG10).
  */
+#include "fpx.h"
+
+#if defined(RELEVO_NO_LIBM)
+
+/* Built without libm (make freestanding): the FPU sends these instructions
+ * to line F before they get here (ops_fpu.c). */
+fpx fpx_trans(fpx_env *e, fpx_func f, fpx a)
+{
+    (void)f;
+    (void)a;
+    e->flags |= FPX_OPERR;
+    return fpx_default_nan();
+}
+
+#else
+
 #include <float.h>
 #include <math.h>
-
-#include "fpx.h"
 
 #define BIAS 16383
 
@@ -243,3 +257,5 @@ fpx fpx_trans(fpx_env *e, fpx_func f, fpx a)
         return operr(e);
     }
 }
+
+#endif /* RELEVO_NO_LIBM */

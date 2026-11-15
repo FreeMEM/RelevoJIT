@@ -31,9 +31,18 @@
  * 11, as any unimplemented instruction (the host's line F function first).
  * The packed decimal format and denormalized operands, also software on
  * those chips, are executed here.
+ *
+ * Built without libm (RELEVO_NO_LIBM, make freestanding), every FPU sends
+ * the transcendental functions to line F that way.
  */
 #include "interp.h"
 #include "../fpx.h"
+
+#if defined(RELEVO_NO_LIBM)
+#define HAVE_TRANS 0
+#else
+#define HAVE_TRANS 1
+#endif
 
 enum {
     VEC_FP_BSUN = 48,
@@ -396,6 +405,7 @@ static void op_arith(relevo_cpu *c, uint16_t op, uint16_t cmd)
     }
     opinfo info = opmode_info(base);
     if (info.kind == K_NONE || (from_ea && !src_valid(mode, reg, spec))
+        || (!HAVE_TRANS && (info.kind == K_TRANS || info.kind == K_SINCOS))
         || (internal_fpu(c) && info.soft040
             && (c->model == RELEVO_68040 || info.soft040 == 2))) {
         fline(c, op);
