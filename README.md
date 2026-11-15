@@ -3,8 +3,8 @@
 A Motorola 680x0 interpreter and x86-64 JIT, as a C library.
 
 It is being rewritten in Rust (`docs/REESCRITURA.md`, Spanish): the crate in `src/` exports the same C interface,
-and the same tests run against both. The Rust version has the 68000 interpreter so far; the C version, in `c/`,
-has everything described below until the Rust one catches up.
+and the same tests run against both. The Rust version has the interpreter (68000 to 68060 and the FPU) so far;
+the C version, in `c/`, has everything described below, the JIT too, until the Rust one catches up.
 
 RelevoJIT runs 68k code on x86-64 machines. The 68k memory stays big-endian, as on the real CPU; the JIT swaps
 bytes on every access (`MOVBE` where available). It knows nothing about any particular computer: the host gives it

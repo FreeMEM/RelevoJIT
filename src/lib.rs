@@ -5,9 +5,10 @@
 //! with the same ABI as the C version in `c/`. It is `no_std` with `alloc`;
 //! the `std` feature (on by default) is for hosted systems and the tests.
 //!
-//! What is here so far (docs/REESCRITURA.md): the 68000 interpreter, with its
-//! exceptions and cycle counts (RR1). The 68010 to 68060, the FPU (RR2) and
-//! the JIT (RR3) come next; `relevo_create()` returns NULL for them.
+//! What is here so far (docs/REESCRITURA.md): the interpreter of the 68000
+//! to 68060 without MMU, with its exceptions and cycle counts (RR1), and the
+//! FPU with its own extended arithmetic (`fpx`, RR2). The JIT (RR3) comes
+//! next; `relevo_create()` returns NULL for it.
 //!
 //! `unsafe` lives only in two modules: [`capi`] (the C boundary) and
 //! `window` (the 68k memory the host gives). Everything else denies it.
