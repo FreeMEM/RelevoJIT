@@ -1,0 +1,28 @@
+[package]
+name = "relevo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+description = "A Motorola 680x0 interpreter and x86-64 JIT, with a C interface (include/relevo.h)"
+repository = "https://github.com/FreeMEM/RelevoJIT"
+publish = false
+
+[lib]
+# rlib for Rust users (DashOS), staticlib and cdylib for C (include/relevo.h)
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[features]
+default = ["std"]
+# Linux and other hosted systems, and the tests. Without it the crate is
+# no_std with alloc: the user gives the allocator and the panic handler.
+std = []
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+debug = 1
+
+[profile.dev]
+panic = "abort"

@@ -21,7 +21,7 @@
 # What the Rust version does not have yet is skipped, with a notice: its
 # unit tests in tests/skip_rust.c, and here the runs that need it.
 
-IMPL ?= c
+IMPL ?= rust
 CARGO ?= cargo
 
 CC ?= cc

@@ -14,14 +14,22 @@ jobs:
         san: ["", "-fsanitize=address,undefined -fno-sanitize-recover=undefined"]
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests, oracle bench and JIT differential
+      - name: C version (c/): unit tests, oracle bench and JIT differential
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" c-test
+      - name: Rust version: the same C tests against it, and the ABI check
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" test
-      - name: SingleStepTests/m68000, interpreter and JIT
+      - name: Rust version: clippy and its own tests
+        if: matrix.san == '' && matrix.cc == 'gcc'
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - name: SingleStepTests/m68000, both versions, interpreter and JIT
         if: matrix.san == ''
         run: |
           make data
           make CC=${{ matrix.cc }} sst
-          make CC=${{ matrix.cc }} sst JIT=1
+          make CC=${{ matrix.cc }} c-sst
+          make CC=${{ matrix.cc }} c-sst JIT=1
 
   # Windows is written but was never run before this job: it may fail until V1 is done.
   windows:
@@ -36,4 +44,4 @@ jobs:
         with:
           msystem: UCRT64
           install: make mingw-w64-ucrt-x86_64-gcc
-      - run: make CC=gcc test
+      - run: make CC=gcc c-test

@@ -2,6 +2,10 @@
 
 A Motorola 680x0 interpreter and x86-64 JIT, as a C library.
 
+It is being rewritten in Rust (`docs/REESCRITURA.md`, Spanish): the crate in `src/` exports the same C interface,
+and the same tests run against both. The Rust version has the 68000 interpreter so far; the C version, in `c/`,
+has everything described below until the Rust one catches up.
+
 RelevoJIT runs 68k code on x86-64 machines. The 68k memory stays big-endian, as on the real CPU; the JIT swaps
 bytes on every access (`MOVBE` where available). It knows nothing about any particular computer: the host gives it
 memory, registers and callbacks for I/O and traps.
@@ -21,7 +25,8 @@ It is the 68k engine of DashOS on x86, in the same way Emu68 is on ARM.
 ## Building
 
 ```sh
-make              # build/librelevo.a (and build/sst, the test runner)
+make              # the Rust library (cargo) and the C tests linked against it, in build/rust/
+make c-test       # c- in front of any target: the same on the C version (build/c/)
 make CC=clang     # any C11 compiler
 make test         # unit tests, the oracle bench and the JIT against the interpreter (both engines)
 make data         # download SingleStepTests/m68000 (MIT) into tests/datos/
@@ -66,7 +71,7 @@ writing the memory block directly, it calls `relevo_invalidate()` for that range
 caches).
 
 With `cfg.fpu` the 68020 and 68030 get a 68881 or 68882 and the 68040 and 68060 their own FPU, in extended
-precision computed in software (`src/fpx*.c`); link with `-lm`, which the transcendental functions use.
+precision computed in software (`c/src/fpx*.c`); link with `-lm`, which the transcendental functions use.
 
 Interrupts come from the host with `relevo_set_ipl()`; `relevo_cycles()` gives the 68000 clock cycles spent so
 far. Unmapped pages (`RELEVO_PAGE_NONE`) give the CPU a bus error.
