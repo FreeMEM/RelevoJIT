@@ -14,11 +14,11 @@ jobs:
         san: ["", "-fsanitize=address,undefined -fno-sanitize-recover=undefined"]
     steps:
       - uses: actions/checkout@v4
-      - name: C version (c/): unit tests, oracle bench and JIT differential
+      - name: "C version (c/): unit tests, oracle bench and JIT differential"
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" c-test
-      - name: Rust version: the same C tests against it, and the ABI check
+      - name: "Rust version: the same C tests against it, and the ABI check"
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 ${{ matrix.san }}" test
-      - name: Rust version: clippy and its own tests
+      - name: "Rust version: clippy and its own tests"
         if: matrix.san == '' && matrix.cc == 'gcc'
         run: |
           cargo clippy --all-targets -- -D warnings
